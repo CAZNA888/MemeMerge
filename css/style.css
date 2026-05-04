@@ -1,0 +1,84 @@
+html,
+body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    background: #101525;
+    font-family: Arial, Helvetica, sans-serif;
+    touch-action: none;
+}
+
+#game-root {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+}
+
+#game-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+    background: #18213a;
+}
+
+#dom-ui {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+#loading-screen {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background: radial-gradient(circle at center, #3346ff 0%, #101525 70%);
+    color: #ffffff;
+    z-index: 10;
+}
+
+#loading-screen.is-hidden {
+    display: none;
+}
+
+.loading-card {
+    box-sizing: border-box;
+    width: min(420px, calc(100vw - 48px));
+    padding: 28px 36px;
+    border-radius: 24px;
+    background: rgba(0, 0, 0, 0.35);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+    text-align: center;
+}
+
+.loading-title {
+    font-size: 28px;
+    font-weight: 800;
+    margin-bottom: 12px;
+}
+
+.loading-text {
+    font-size: 18px;
+    opacity: 0.9;
+}
+
+.loading-bar {
+    margin-top: 20px;
+    width: 100%;
+    height: 10px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.18);
+    overflow: hidden;
+}
+
+.loading-bar-fill {
+    width: 0%;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #48e6ff, #7cf8ff);
+    transition: width 0.15s ease-out;
+}

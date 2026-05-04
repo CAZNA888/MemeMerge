@@ -1,0 +1,48 @@
+{
+  "advertisement": {
+    "interstitial": {
+      "placements": [{ "id": "default" }]
+    },
+    "rewarded": {
+      "placements": [{ "id": "default" }]
+    },
+    "banner": {
+      "placements": [{ "id": "default" }]
+    }
+  },
+  "leaderboards": [
+    {
+      "id": "cups"
+    }
+  ],
+  "payments": [
+    {
+      "id": "coins_10000",
+      "playgama": {
+        "amount": 10,
+        "description": "10,000 coins — quick boost for upgrades and the merge board."
+      }
+    },
+    {
+      "id": "coins_100000",
+      "playgama": {
+        "amount": 100,
+        "description": "100,000 coins — stock up for serious progression and shop deals."
+      }
+    },
+    {
+      "id": "coins_1000000",
+      "playgama": {
+        "amount": 1000,
+        "description": "1,000,000 coins — max out upgrades and play without running dry."
+      }
+    },
+    {
+      "id": "vip_forever",
+      "playgama": {
+        "amount": 50,
+        "description": "Lifetime VIP — double passive income, shorter battle cooldowns, and a permanent shop discount."
+      }
+    }
+  ]
+}
