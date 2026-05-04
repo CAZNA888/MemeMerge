@@ -1648,13 +1648,28 @@
         return selectedType;
     }
 
-    function getSideButtonRects() {
-        return [
-            { id: "fighters", x: 30, y: 150, width: 138, height: 92 },
-            { id: "shop", x: 30, y: 254, width: 138, height: 92 },
-            { id: "leaderboard", x: 30, y: 358, width: 138, height: 92 },
-            { id: "vip", x: 30, y: 462, width: 138, height: 92 }
+    function getSideButtons() {
+        const buttons = [
+            { id: "fighters", icon: "ui:fighters", title: window.GameUtils.translate("menu.fighters") },
+            { id: "shop", icon: "ui:shop", title: window.GameUtils.translate("menu.shop") },
+            { id: "leaderboard", icon: "ui:leaderboard", title: window.GameUtils.translate("menu.leaderboard") }
         ];
+
+        if (window.GameState?.vipPurchased || isRealMoneyPurchasesAvailable()) {
+            buttons.push({ id: "vip", icon: "ui:vip", title: window.GameUtils.translate("menu.vip") });
+        }
+
+        return buttons;
+    }
+
+    function getSideButtonRects() {
+        return getSideButtons().map((button, index) => ({
+            id: button.id,
+            x: 30,
+            y: 150 + index * 104,
+            width: 138,
+            height: 92
+        }));
     }
 
     function getPanelCloseRect() {
@@ -1929,16 +1944,26 @@
         };
     }
 
+    function isRealMoneyPurchasesAvailable() {
+        return Boolean(window.GameSDK?.isPaymentsSupported?.());
+    }
+
     function getInAppsPacks() {
         const config = window.InAppPurchaseConfig || {};
         const packs = Array.isArray(config.packs) ? config.packs : [];
         const defaultCurrencyLabel = config.defaultCurrencyLabel || "YAN";
+        const paymentsAvailable = isRealMoneyPurchasesAvailable();
 
         return packs.map((pack, index) => {
             const coinAmount = Math.max(0, Math.floor(Number(pack.coinAmount) || 0));
             const priceValue = Math.max(0, Math.floor(Number(pack.priceValue) || 0));
             const productId = String(pack.productId || pack.id || ("pack_" + index)).trim();
             const purchaseType = pack.purchaseType === "rewarded" ? "rewarded" : "purchase";
+
+            if (purchaseType === "purchase" && !paymentsAvailable) {
+                return null;
+            }
+
             const entry = {
                 id: pack.id || "pack_" + index,
                 productId,
@@ -1962,7 +1987,7 @@
             }
 
             return entry;
-        }).filter((pack) => pack.coinAmount > 0);
+        }).filter((pack) => pack && pack.coinAmount > 0);
     }
 
     function getInAppsCardRect(index) {
@@ -2264,8 +2289,14 @@
         const packs = Array.isArray(window.InAppPurchaseConfig?.packs) ? window.InAppPurchaseConfig.packs : [];
         const vipPack = packs.find((pack) => pack.grantVip);
         const productId = vipPack?.productId || vipPack?.id || "vip_forever";
+        const isPurchaseVip = vipPack?.purchaseType === "purchase";
 
-        if (!vipPack) {
+        if (isPurchaseVip && !isRealMoneyPurchasesAvailable()) {
+            window.GameAssets.playSound("lose");
+            return true;
+        }
+
+        if (!vipPack || !isPurchaseVip) {
             const result = window.Game.buyVip();
             window.GameAssets.playSound(result?.success ? "button" : "lose");
             return true;
@@ -2829,18 +2860,13 @@
     }
 
     function drawSideButtons(ctx) {
-        const buttons = [
-            ["fighters", "ui:fighters", window.GameUtils.translate("menu.fighters")],
-            ["shop", "ui:shop", window.GameUtils.translate("menu.shop")],
-            ["leaderboard", "ui:leaderboard", window.GameUtils.translate("menu.leaderboard")],
-            ["vip", "ui:vip", window.GameUtils.translate("menu.vip")]
-        ];
+        const buttons = getSideButtons();
         const rects = getSideButtonRects();
 
         buttons.forEach((button, index) => {
             const rect = rects[index];
 
-            drawButton(ctx, rect.x, rect.y, rect.width, rect.height, button[1], button[2], {
+            drawButton(ctx, rect.x, rect.y, rect.width, rect.height, button.icon, button.title, {
                 iconSize: 66,
                 iconOffsetY: -12,
                 textSize: 21,
@@ -3943,7 +3969,9 @@
                 "vip_forever"
         ).trim();
         const vipCatalog = window.GameSDK?.getIapCatalogProduct?.(vipProductId);
-        const isCoinFallbackVip = !vipPackCfg || vipPackCfg.purchaseType !== "purchase";
+        const isPurchaseVip = vipPackCfg?.purchaseType === "purchase";
+        const isCoinFallbackVip = !vipPackCfg || !isPurchaseVip;
+        const canShowPurchaseVip = !isPurchaseVip || isRealMoneyPurchasesAvailable();
 
         drawText(ctx, window.GameUtils.translate("vip.benefit_income"), textBlockX, body.y + 126, 21, "left");
         drawText(ctx, window.GameUtils.translate("vip.benefit_cooldown"), textBlockX, body.y + 160, 21, "left");
@@ -3971,17 +3999,19 @@
             );
         }
 
-        drawInteractivePanel(ctx, vipBuyRect, "#23c26b", "#31d77d");
-        drawText(
-            ctx,
-            window.GameUtils.translate(window.GameState.vipPurchased ? "vip.status_active" : "vip.buy_vip"),
-            textBlockX + textBlockWidth / 2,
-            body.y + 358,
-            23,
-            "center"
-        );
+        if (window.GameState.vipPurchased || canShowPurchaseVip) {
+            drawInteractivePanel(ctx, vipBuyRect, "#23c26b", "#31d77d");
+            drawText(
+                ctx,
+                window.GameUtils.translate(window.GameState.vipPurchased ? "vip.status_active" : "vip.buy_vip"),
+                textBlockX + textBlockWidth / 2,
+                body.y + 358,
+                23,
+                "center"
+            );
+        }
 
-        if (!window.GameState.vipPurchased && !isCoinFallbackVip) {
+        if (!window.GameState.vipPurchased && !isCoinFallbackVip && canShowPurchaseVip) {
             const priceLine = formatVipPanelPriceText(vipPackCfg, vipCatalog);
             const priceY = vipBuyRect.y + vipBuyRect.height + 14;
 

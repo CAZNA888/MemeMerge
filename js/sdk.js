@@ -576,6 +576,11 @@
         return sdkState.portalCurrencyImage;
     }
 
+    function isPaymentsSupported() {
+        const bridge = getBridge();
+        return Boolean(!sdkState.isLocalMode && bridge?.payments?.isSupported);
+    }
+
     async function getPurchasesCatalog() {
         if (IAP_KNOWN_IDS.every((id) => !sdkState.iapCatalogById[id])) {
             await refreshIapCatalog();
@@ -849,6 +854,7 @@
         getPurchasesCatalog,
         getIapCatalogProduct,
         getPortalCurrencyImage,
+        isPaymentsSupported,
         purchaseProduct,
         consumePurchase,
         claimPendingPurchases,
