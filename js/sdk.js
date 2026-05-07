@@ -28,6 +28,29 @@
         return window.bridge || window.playgamaBridge || null;
     }
 
+    function isOnlineMode() {
+        return !sdkState.isLocalMode && Boolean(getBridge());
+    }
+
+    function isLocalMode() {
+        return !isOnlineMode();
+    }
+
+    function isAdsSupported() {
+        const bridge = getBridge();
+        return Boolean(isOnlineMode() && bridge?.advertisement);
+    }
+
+    function isPaymentsSupported() {
+        const bridge = getBridge();
+        return Boolean(isOnlineMode() && bridge?.payments?.isSupported);
+    }
+
+    function isLeaderboardsSupported() {
+        const bridge = getBridge();
+        return Boolean(isOnlineMode() && bridge?.leaderboards && bridge.leaderboards.type !== "not_available");
+    }
+
     function waitForBridge(timeoutMs) {
         if (getBridge()) {
             return Promise.resolve();
@@ -81,6 +104,7 @@
                 .catch((error) => {
                     console.warn("Playgama Bridge init failed, local mode enabled.", error);
                     sdkState.isLocalMode = true;
+                    sdkState.bridge = null;
                     return refreshIapCatalog().catch(() => {});
                 })
                 .then(() => {
@@ -104,8 +128,13 @@
         const key = window.Base.saveKey;
 
         if (sdkState.isLocalMode || !getBridge()?.storage?.get) {
-            const raw = localStorageFallback().getItem(key);
-            return raw ? JSON.parse(raw) : null;
+            return Promise.resolve().then(() => {
+                const raw = localStorageFallback().getItem(key);
+                return raw ? JSON.parse(raw) : null;
+            }).catch((error) => {
+                console.warn("Local save get failed.", error);
+                return null;
+            });
         }
 
         return getBridge().storage.get(key).then((data) => {
@@ -131,8 +160,11 @@
         const json = JSON.stringify(data);
 
         if (sdkState.isLocalMode || !getBridge()?.storage?.set) {
-            localStorageFallback().setItem(key, json);
-            return undefined;
+            return Promise.resolve().then(() => {
+                localStorageFallback().setItem(key, json);
+            }).catch((error) => {
+                console.warn("Local save set failed.", error);
+            });
         }
 
         return getBridge().storage.set(key, json)
@@ -146,8 +178,10 @@
     function ready() {
         const bridge = getBridge();
         if (bridge?.platform?.sendMessage) {
-            bridge.platform.sendMessage("game_ready").catch(() => {});
+            return bridge.platform.sendMessage("game_ready").then(() => true).catch(() => false);
         }
+
+        return Promise.resolve(false);
     }
 
     function gameplayStart() {
@@ -181,17 +215,17 @@
         const bridge = getBridge();
 
         if (sdkState.isLocalMode || !bridge?.advertisement?.showInterstitial) {
-            return { shown: false, local: true };
+            return Promise.resolve({ shown: false, local: true });
         }
 
         if (!bridge.advertisement.isInterstitialSupported) {
-            return { shown: false, local: false };
+            return Promise.resolve({ shown: false, local: false });
         }
 
         const minInterval = Math.max(0, Number(window.AdConfig?.interstitialMinIntervalMs) || 0);
         const now = Date.now();
         if (minInterval > 0 && now - sdkState.lastInterstitialAt < minInterval) {
-            return { shown: false, reason: "cooldown" };
+            return Promise.resolve({ shown: false, reason: "cooldown" });
         }
 
         const eventName = bridge.EVENT_NAME?.INTERSTITIAL_STATE_CHANGED || "interstitial_state_changed";
@@ -254,11 +288,11 @@
         const bridge = getBridge();
 
         if (sdkState.isLocalMode || !bridge?.advertisement?.showBanner) {
-            return { stickyAdvIsShowing: false, local: true };
+            return Promise.resolve({ stickyAdvIsShowing: false, local: true });
         }
 
         if (!bridge.advertisement.isBannerSupported) {
-            return { stickyAdvIsShowing: false, local: false };
+            return Promise.resolve({ stickyAdvIsShowing: false, local: false });
         }
 
         return bridge.advertisement.showBanner("bottom", PLACEMENT_BANNER)
@@ -278,7 +312,7 @@
         const bridge = getBridge();
 
         if (sdkState.isLocalMode || !bridge?.advertisement?.hideBanner) {
-            return { stickyAdvIsShowing: false, local: true };
+            return Promise.resolve({ stickyAdvIsShowing: false, local: true });
         }
 
         return bridge.advertisement.hideBanner()
@@ -311,7 +345,7 @@
     function startStickyBannerLoop() {
         window.clearInterval(sdkState.bannerTimerId);
 
-        if (!window.AdConfig?.stickyBannerEnabled) {
+        if (!window.AdConfig?.stickyBannerEnabled || !isAdsSupported()) {
             return;
         }
 
@@ -326,11 +360,11 @@
         const bridge = getBridge();
 
         if (sdkState.isLocalMode || !bridge?.advertisement?.showRewarded) {
-            return { shown: false, rewarded: false, local: true };
+            return Promise.resolve({ shown: false, rewarded: false, local: true });
         }
 
         if (!bridge.advertisement.isRewardedSupported) {
-            return { shown: false, rewarded: false, local: false };
+            return Promise.resolve({ shown: false, rewarded: false, local: false });
         }
 
         let rewarded = false;
@@ -408,7 +442,7 @@
         const bridge = getBridge();
 
         if (sdkState.isLocalMode || !bridge?.leaderboards?.setScore) {
-            return false;
+            return Promise.resolve(false);
         }
 
         return isAvailableMethod("leaderboards.setScore").then((allowed) => {
@@ -431,11 +465,11 @@
         const bridge = getBridge();
 
         if (sdkState.isLocalMode || !bridge?.leaderboards?.getEntries) {
-            return null;
+            return Promise.resolve(null);
         }
 
         if (bridge.leaderboards.type !== "in_game") {
-            return null;
+            return Promise.resolve(null);
         }
 
         return bridge.leaderboards.getEntries(window.Base.leaderboardName).then((list) => {
@@ -615,11 +649,11 @@
         });
 
         if (sdkState.isLocalMode || !bridge?.payments?.purchase || !productId) {
-            return { success: false, local: sdkState.isLocalMode };
+            return Promise.resolve({ success: false, local: sdkState.isLocalMode });
         }
 
         if (!bridge.payments.isSupported) {
-            return { success: false, local: false };
+            return Promise.resolve({ success: false, local: false });
         }
 
         gameplayStop();
@@ -860,6 +894,11 @@
     window.GameSDK = {
         state: sdkState,
         init,
+        isOnlineMode,
+        isLocalMode,
+        isAdsSupported,
+        isPaymentsSupported,
+        isLeaderboardsSupported,
         getPreferredLanguage,
         waitForBridge,
         waitForYandexSdk: waitForBridge,

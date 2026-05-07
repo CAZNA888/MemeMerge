@@ -1004,6 +1004,11 @@
             completeTutorialIfDone();
         }
 
+        if (window.GameSDK?.isLocalMode?.()) {
+            openBattleSelectionPanel();
+            return;
+        }
+
         window.GameSDK.showFullscreenAdv()
             .catch(() => null)
             .finally(() => {
@@ -1019,6 +1024,11 @@
         const safeSource = source === "progress" ? "progress" : "ad";
 
         if (safeSource === "ad") {
+            if (window.GameSDK?.isLocalMode?.()) {
+                window.GameAssets.playSound("lose");
+                return;
+            }
+
             uiState.boxOpening.requestInProgress = true;
             window.GameAnalytics?.trackGoal?.("monetization_offer_accept", {
                 offer: "ad_box_rewarded"
@@ -2386,6 +2396,12 @@
             return Promise.resolve();
         }
 
+        if (window.GameSDK?.isLocalMode?.()) {
+            uiState.leaderboard.entries = [];
+            uiState.leaderboard.requestedAt = performance.now();
+            return Promise.resolve();
+        }
+
         uiState.leaderboard.isLoading = true;
         return window.GameSDK.getLeaderboardEntries({
             quantityTop: 10,
@@ -2511,6 +2527,11 @@
 
     function requestShopPack(pack) {
         if (!pack || uiState.panel.inAppsPurchasePendingId) {
+            return;
+        }
+
+        if (window.GameSDK?.isLocalMode?.()) {
+            window.GameAssets.playSound("lose");
             return;
         }
 
