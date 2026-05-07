@@ -16,7 +16,7 @@
         maxUIScale: 1.35,
         autosaveIntervalMs: 15000,
         saveDebounceMs: 1200,
-        loadingMinDurationMs: 800
+        loadingMinDurationMs: 150
     };
 
     window.EconomyConfig = {

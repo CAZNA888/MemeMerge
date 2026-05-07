@@ -116,9 +116,9 @@
         });
     }
 
-    function createSoundEntry(key, path) {
+    function createSoundEntry(key, path, options) {
         const audio = new Audio(path);
-        audio.preload = "auto";
+        audio.preload = (options && options.preload) || "auto";
         audio.volume = Number.isFinite(soundVolumes[key]) ? soundVolumes[key] : 0.6;
         audio.loop = key === "bg-music";
 
@@ -128,6 +128,15 @@
             audio,
             missing: false
         };
+    }
+
+    function ensureSoundLoaded(key) {
+        if (assets.sounds[key]) {
+            return;
+        }
+
+        const extension = key === "bg-music" || key === "coin-scatter" ? "mp3" : "wav";
+        createSoundEntry(key, "assets/sounds/" + key + "." + extension, { preload: "none" });
     }
 
     function getImageManifest() {
@@ -152,12 +161,10 @@
         return brawlers.concat(ui, effects);
     }
 
-    function loadAssets(onProgress) {
-        soundKeys.forEach((key) => {
-            const extension = key === "bg-music" || key === "coin-scatter" ? "mp3" : "wav";
-            createSoundEntry(key, "assets/sounds/" + key + "." + extension);
-        });
+    /** Full-screen backdrop; defer start so lighter UI icons populate first on slow links. */
+    const deferredImageLoadKeys = new Set(["ui:background"]);
 
+    function loadAssets(onProgress) {
         const manifest = getImageManifest();
         const total = manifest.length;
         let loaded = 0;
@@ -168,18 +175,37 @@
             }
         }
 
-        notify();
-
-        return Promise.all(manifest.map((entry) => {
-            return createImageEntry(entry.key, entry.path, entry.label).then((result) => {
+        function startImageEntry(entry) {
+            createImageEntry(entry.key, entry.path, entry.label).then(() => {
                 loaded += 1;
                 notify();
-                return result;
             });
-        })).then(() => {
-            assets.loaded = true;
-            return assets;
+        }
+
+        const now = [];
+        const later = [];
+
+        manifest.forEach((entry) => {
+            if (deferredImageLoadKeys.has(entry.key)) {
+                later.push(entry);
+            } else {
+                now.push(entry);
+            }
         });
+
+        now.forEach(startImageEntry);
+        if (later.length > 0) {
+            window.setTimeout(() => {
+                later.forEach(startImageEntry);
+            }, 100);
+        }
+
+        assets.loaded = true;
+        if (typeof onProgress === "function") {
+            onProgress(1);
+        }
+
+        return Promise.resolve(assets);
     }
 
     function getImage(key) {
@@ -322,6 +348,7 @@
     }
 
     function playSound(key) {
+        ensureSoundLoaded(key);
         const sound = assets.sounds[key];
 
         if (!sound || !sound.audio || window.GameState?.settings?.sound === false) {
@@ -457,6 +484,7 @@
             return;
         }
 
+        ensureSoundLoaded("bg-music");
         const sound = assets.sounds["bg-music"];
 
         if (!sound || !sound.audio) {
@@ -513,6 +541,7 @@
     };
 
     function refreshAudioSettings() {
+        ensureSoundLoaded("bg-music");
         const musicVolume = window.GameState?.settings?.musicVolume ?? 1;
         const bgMusic = assets.sounds["bg-music"]?.audio;
 
