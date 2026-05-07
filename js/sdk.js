@@ -52,11 +52,7 @@
     }
 
     function waitForBridge(timeoutMs) {
-        if (getBridge()) {
-            return Promise.resolve();
-        }
-
-        return new Promise((resolve) => {
+        const waitForGlobalBridge = () => new Promise((resolve) => {
             const start = Date.now();
 
             function tick() {
@@ -70,6 +66,27 @@
 
             tick();
         });
+
+        if (getBridge()) {
+            return Promise.resolve();
+        }
+
+        const loaderReady = window.PlaygamaBridgeLoader?.ready;
+        if (!loaderReady) {
+            return waitForGlobalBridge();
+        }
+
+        return loaderReady
+            .catch((error) => {
+                console.warn("Playgama Bridge loader failed.", error);
+            })
+            .then(() => {
+                if (getBridge()) {
+                    return;
+                }
+
+                return waitForGlobalBridge();
+            });
     }
 
     function init() {

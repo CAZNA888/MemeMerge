@@ -1,6 +1,8 @@
 (function () {
     "use strict";
 
+    const BRIDGE_MISSING_ERROR = "bridge_missing";
+
     function setLoadingMessage(titleElement, textElement, title, text) {
         if (titleElement) {
             titleElement.textContent = String(title || "");
@@ -19,8 +21,15 @@
 
         window.GameSDK.init()
             .then(() => {
-                if (window.GameSDK?.state?.isLocalMode && !window.GameSDK?.state?.bridge) {
-                    console.warn("Playgama Bridge unavailable. Continuing in local mode.");
+                const bridgeMissing = window.GameSDK?.state?.isLocalMode && !window.GameSDK?.state?.bridge;
+                if (bridgeMissing) {
+                    setLoadingMessage(
+                        titleElement,
+                        textElement,
+                        "Ошибка подключения Playgama",
+                        "Не удалось загрузить Playgama Bridge. Обновите страницу."
+                    );
+                    throw new Error(BRIDGE_MISSING_ERROR);
                 }
 
                 return Promise.resolve(window.GameSDK.loadSave())
@@ -84,6 +93,10 @@
                 }, window.Base.loadingMinDurationMs);
             })
             .catch((error) => {
+                if (error?.message === BRIDGE_MISSING_ERROR) {
+                    return;
+                }
+
                 console.error("Bootstrap failed.", error);
                 setLoadingMessage(
                     titleElement,
