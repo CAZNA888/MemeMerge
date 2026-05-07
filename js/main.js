@@ -1,11 +1,6 @@
 (function () {
     "use strict";
 
-    const BRIDGE_RETRY_SESSION_KEY = "bridge_retry_count";
-    const BRIDGE_RETRY_DELAY_MS = 1800;
-    const BRIDGE_RETRY_LIMIT = 3;
-    const BRIDGE_MISSING_RETRY_ERROR = "bridge_missing_retry";
-
     function setLoadingMessage(titleElement, textElement, title, text) {
         if (titleElement) {
             titleElement.textContent = String(title || "");
@@ -16,43 +11,6 @@
         }
     }
 
-    function scheduleBridgeReload(titleElement, textElement) {
-        let retryCount = 0;
-
-        try {
-            retryCount = Number(window.sessionStorage?.getItem(BRIDGE_RETRY_SESSION_KEY)) || 0;
-        } catch (error) {
-            void error;
-        }
-
-        if (retryCount >= BRIDGE_RETRY_LIMIT) {
-            setLoadingMessage(
-                titleElement,
-                textElement,
-                "Проблемы с соединением",
-                "Не удалось подключиться к сервису. Проверьте интернет и обновите страницу."
-            );
-            return;
-        }
-
-        try {
-            window.sessionStorage?.setItem(BRIDGE_RETRY_SESSION_KEY, String(retryCount + 1));
-        } catch (error) {
-            void error;
-        }
-
-        setLoadingMessage(
-            titleElement,
-            textElement,
-            "Проблемы с соединением",
-            "Повторная загрузка..."
-        );
-
-        window.setTimeout(() => {
-            window.location.reload();
-        }, BRIDGE_RETRY_DELAY_MS);
-    }
-
     function start() {
         window.GameAnalytics?.init?.(window.AnalyticsConfig?.yandexMetricaCounterId);
         const titleElement = document.getElementById("loading-title");
@@ -61,10 +19,8 @@
 
         window.GameSDK.init()
             .then(() => {
-                const bridgeMissing = window.GameSDK?.state?.isLocalMode && !window.GameSDK?.state?.bridge;
-                if (bridgeMissing) {
-                    scheduleBridgeReload(titleElement, textElement);
-                    throw new Error(BRIDGE_MISSING_RETRY_ERROR);
+                if (window.GameSDK?.state?.isLocalMode && !window.GameSDK?.state?.bridge) {
+                    console.warn("Playgama Bridge unavailable. Continuing in local mode.");
                 }
 
                 return Promise.resolve(window.GameSDK.loadSave())
@@ -116,12 +72,6 @@
             .then(() => {
                 window.GameSDK.attachDeferredBridgeListeners();
                 window.GameUI.init();
-                try {
-                    window.sessionStorage?.removeItem(BRIDGE_RETRY_SESSION_KEY);
-                } catch (error) {
-                    void error;
-                }
-
                 window.setTimeout(() => {
                     if (loadingDotsTimerId) {
                         window.clearInterval(loadingDotsTimerId);
@@ -134,10 +84,6 @@
                 }, window.Base.loadingMinDurationMs);
             })
             .catch((error) => {
-                if (error?.message === BRIDGE_MISSING_RETRY_ERROR) {
-                    return;
-                }
-
                 console.error("Bootstrap failed.", error);
                 setLoadingMessage(
                     titleElement,
