@@ -7,10 +7,7 @@
         saveVersion: 1,
         leaderboardName: "cups",
         defaultLanguage: "ru",
-        supportedLanguages: [
-            "ru", "en", "es", "tr", "de", "fr", "ar", "az", "zh", "nl",
-            "hi", "id", "it", "ja", "ko", "kk", "pl", "pt", "th", "uk", "uz", "vi"
-        ],
+        supportedLanguages: ["ru"],
         designWidth: 1280,
         designHeight: 720,
         portraitDesignWidth: 720,
