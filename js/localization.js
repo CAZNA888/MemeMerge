@@ -454,6 +454,37 @@
         vi
     };
 
+    function ensureTutorialLocaleKeys() {
+        Object.keys(localizationMap).forEach((languageCode) => {
+            const locale = localizationMap[languageCode];
+            if (!locale || typeof locale !== "object") {
+                return;
+            }
+
+            locale.tutorial = Object.assign({
+                buy_two_characters: ((locale.menu?.buy_character) || "Buy fighter") + " x2",
+                merge_one_pair: (locale.fighters?.merge_hint) || "Merge two same fighters",
+                press_battle: (locale.menu?.battle) || "Battle",
+                pick_first_three: (locale.fighters?.choose_team) || "Choose 3 fighters",
+                press_play: (locale.battle?.play) || "Play",
+                press_accept: (locale.battle?.accept) || "Accept"
+            }, locale.tutorial || {});
+        });
+    }
+
+    function ensureBattleLocaleKeys() {
+        Object.keys(localizationMap).forEach((languageCode) => {
+            const locale = localizationMap[languageCode];
+            if (!locale || typeof locale !== "object") {
+                return;
+            }
+
+            locale.battle = Object.assign({
+                leave: (locale.base?.close) || "Leave"
+            }, locale.battle || {});
+        });
+    }
+
     function normalizeLanguageCode(rawLanguageCode) {
         if (!rawLanguageCode) {
             return "";
@@ -584,5 +615,7 @@
         resolveInitialLanguage
     };
 
+    ensureTutorialLocaleKeys();
+    ensureBattleLocaleKeys();
     validateLocales();
 }());

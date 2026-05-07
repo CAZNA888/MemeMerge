@@ -37,6 +37,16 @@
                 soundVolume: 0.8,
                 language: initialLanguage,
                 reduceAnimations: false
+            },
+            tutorial: {
+                enabled: true,
+                completed: false,
+                purchasesDone: 0,
+                mergeDone: false,
+                battleButtonDone: false,
+                battleCardsDone: false,
+                battlePlayDone: false,
+                battleConfirmed: false
             }
         };
     }
@@ -163,6 +173,7 @@
         state.upgrades = Object.assign({}, defaults.upgrades, source.upgrades || {});
         state.stats = Object.assign({}, defaults.stats, source.stats || {});
         state.settings = Object.assign({}, defaults.settings, source.settings || {});
+        state.tutorial = Object.assign({}, defaults.tutorial, source.tutorial || {});
         state.brawlers = Array.isArray(source.brawlers)
             ? source.brawlers.map(normalizeBrawler)
             : [];
@@ -184,6 +195,17 @@
             state.settings.language
         ]) || window.Base.defaultLanguage;
         state.settings.reduceAnimations = Boolean(state.settings.reduceAnimations);
+        state.tutorial.enabled = Boolean(state.tutorial.enabled);
+        state.tutorial.completed = Boolean(state.tutorial.completed);
+        state.tutorial.purchasesDone = Math.max(0, Math.floor(Number(state.tutorial.purchasesDone) || 0));
+        state.tutorial.mergeDone = Boolean(state.tutorial.mergeDone);
+        state.tutorial.battleButtonDone = Boolean(state.tutorial.battleButtonDone);
+        state.tutorial.battleCardsDone = Boolean(state.tutorial.battleCardsDone);
+        state.tutorial.battlePlayDone = Boolean(state.tutorial.battlePlayDone);
+        state.tutorial.battleConfirmed = Boolean(state.tutorial.battleConfirmed);
+        if (!state.tutorial.battleButtonDone && state.tutorial.battleDone) {
+            state.tutorial.battleButtonDone = true;
+        }
         state.version = window.Base.saveVersion;
 
         if (!Number.isFinite(Number(state.stats.openedBrawlers)) || state.stats.openedBrawlers <= 0) {
@@ -213,7 +235,8 @@
             })),
             upgrades: Object.assign({}, state.upgrades),
             stats: Object.assign({}, state.stats),
-            settings: Object.assign({}, state.settings)
+            settings: Object.assign({}, state.settings),
+            tutorial: Object.assign({}, state.tutorial)
         };
     }
 
@@ -225,21 +248,23 @@
         }
     }
 
-    async function saveIfDirty(flush) {
+    function saveIfDirty(flush) {
         if (!runtime.dirty || runtime.saveInProgress || !window.GameState) {
-            return;
+            return Promise.resolve();
         }
 
         runtime.saveInProgress = true;
 
-        try {
-            await window.GameSDK.saveData(serializeState(), Boolean(flush));
-            runtime.dirty = false;
-        } catch (error) {
-            console.warn("Save failed.", error);
-        } finally {
-            runtime.saveInProgress = false;
-        }
+        return window.GameSDK.saveData(serializeState(), Boolean(flush))
+            .then(() => {
+                runtime.dirty = false;
+            })
+            .catch((error) => {
+                console.warn("Save failed.", error);
+            })
+            .finally(() => {
+                runtime.saveInProgress = false;
+            });
     }
 
     function saveNow() {
@@ -725,31 +750,48 @@
         }, window.Base.autosaveIntervalMs);
     }
 
-    async function init() {
-        const saveData = await window.GameSDK.loadSave();
-        window.GameState = normalizeState(saveData);
-        runtime.debouncedSave = window.GameUtils.createDebounce(() => {
-            saveIfDirty(false);
-        }, window.Base.saveDebounceMs);
-        startAutosave();
+    function init() {
+        return window.GameSDK.loadSave().then((saveData) => {
+            window.GameState = normalizeState(saveData);
+            if (!saveData) {
+                window.GameState.coins = Math.max(500, Number(window.GameState.coins) || 0);
+                window.GameState.tutorial = Object.assign({}, window.GameState.tutorial, {
+                    enabled: true,
+                    completed: false,
+                    purchasesDone: 0,
+                    mergeDone: false,
+                    battleButtonDone: false,
+                    battleCardsDone: false,
+                    battlePlayDone: false,
+                    battleConfirmed: false
+                });
+                window.GameAnalytics?.trackGoal?.("first_launch", {
+                    language: window.GameState?.settings?.language || window.Base.defaultLanguage
+                });
+            }
+            runtime.debouncedSave = window.GameUtils.createDebounce(() => {
+                saveIfDirty(false);
+            }, window.Base.saveDebounceMs);
+            startAutosave();
 
-        if (!saveData) {
-            markDirty();
-        }
-
-        window.GameSDK.claimPendingPurchases((productId) => {
-            if (grantCoinPackByProductId(productId)) {
-                return true;
+            if (!saveData) {
+                markDirty();
             }
 
-            if (grantVipByProductId(productId)) {
-                return true;
-            }
+            window.GameSDK.claimPendingPurchases((productId) => {
+                if (grantCoinPackByProductId(productId)) {
+                    return true;
+                }
 
-            return false;
-        }).catch(() => {});
+                if (grantVipByProductId(productId)) {
+                    return true;
+                }
 
-        return window.GameState;
+                return false;
+            }).catch(() => {});
+
+            return window.GameState;
+        });
     }
 
     window.Game = {

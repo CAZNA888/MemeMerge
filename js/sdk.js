@@ -49,43 +49,47 @@
         });
     }
 
-    async function init() {
-        await waitForBridge(5000);
+    function init() {
+        return waitForBridge(5000).then(() => {
+            const bridge = getBridge();
+            sdkState.bridge = bridge;
 
-        const bridge = getBridge();
-        sdkState.bridge = bridge;
-
-        if (!bridge || typeof bridge.initialize !== "function") {
-            console.warn("Playgama Bridge not found, local mode enabled.");
-            sdkState.isLocalMode = true;
-            bindLifecycleEvents();
-            sdkState.isReady = true;
-            return sdkState;
-        }
-
-        try {
-            await bridge.initialize();
-            sdkState.isLocalMode = false;
-            sdkState.platformLanguage = String(bridge.platform?.language || "").toLowerCase();
-
-            const minSec = Math.max(0, Math.floor(Number(window.AdConfig?.interstitialMinIntervalMs) / 1000));
-            if (minSec > 0 && typeof bridge.advertisement?.setMinimumDelayBetweenInterstitial === "function") {
-                bridge.advertisement.setMinimumDelayBetweenInterstitial(minSec);
+            if (!bridge || typeof bridge.initialize !== "function") {
+                console.warn("Playgama Bridge not found, local mode enabled.");
+                sdkState.isLocalMode = true;
+                bindLifecycleEvents();
+                sdkState.isReady = true;
+                return sdkState;
             }
 
-            await fetchRemoteFlags();
-            await refreshIapCatalog().catch(() => {});
-            bindBridgePlatformEvents();
-        } catch (error) {
-            console.warn("Playgama Bridge init failed, local mode enabled.", error);
-            sdkState.isLocalMode = true;
-            await refreshIapCatalog().catch(() => {});
-        }
+            return bridge.initialize()
+                .then(() => {
+                    sdkState.isLocalMode = false;
+                    sdkState.platformLanguage = String(bridge.platform?.language || "").toLowerCase();
 
-        bindLifecycleEvents();
-        startStickyBannerLoop();
-        sdkState.isReady = true;
-        return sdkState;
+                    const minSec = Math.max(0, Math.floor(Number(window.AdConfig?.interstitialMinIntervalMs) / 1000));
+                    if (minSec > 0 && typeof bridge.advertisement?.setMinimumDelayBetweenInterstitial === "function") {
+                        bridge.advertisement.setMinimumDelayBetweenInterstitial(minSec);
+                    }
+
+                    return fetchRemoteFlags()
+                        .then(() => refreshIapCatalog().catch(() => {}))
+                        .then(() => {
+                            bindBridgePlatformEvents();
+                        });
+                })
+                .catch((error) => {
+                    console.warn("Playgama Bridge init failed, local mode enabled.", error);
+                    sdkState.isLocalMode = true;
+                    return refreshIapCatalog().catch(() => {});
+                })
+                .then(() => {
+                    bindLifecycleEvents();
+                    startStickyBannerLoop();
+                    sdkState.isReady = true;
+                    return sdkState;
+                });
+        });
     }
 
     function getPreferredLanguage() {
@@ -96,7 +100,7 @@
         return window.localStorage;
     }
 
-    async function loadSave() {
+    function loadSave() {
         const key = window.Base.saveKey;
 
         if (sdkState.isLocalMode || !getBridge()?.storage?.get) {
@@ -104,8 +108,7 @@
             return raw ? JSON.parse(raw) : null;
         }
 
-        try {
-            const data = await getBridge().storage.get(key);
+        return getBridge().storage.get(key).then((data) => {
             if (data == null) {
                 return null;
             }
@@ -115,15 +118,14 @@
             }
 
             return data;
-        } catch (error) {
+        }).catch((error) => {
             console.warn("Bridge storage get failed, fallback to localStorage.", error);
-        }
-
-        const raw = localStorageFallback().getItem(key);
-        return raw ? JSON.parse(raw) : null;
+            const raw = localStorageFallback().getItem(key);
+            return raw ? JSON.parse(raw) : null;
+        });
     }
 
-    async function saveData(data, flush) {
+    function saveData(data, flush) {
         void flush;
         const key = window.Base.saveKey;
         const json = JSON.stringify(data);
@@ -133,14 +135,12 @@
             return undefined;
         }
 
-        try {
-            await getBridge().storage.set(key, json);
-        } catch (error) {
-            console.warn("Bridge storage set failed, fallback to localStorage.", error);
-            localStorageFallback().setItem(key, json);
-        }
-
-        return undefined;
+        return getBridge().storage.set(key, json)
+            .catch((error) => {
+                console.warn("Bridge storage set failed, fallback to localStorage.", error);
+                localStorageFallback().setItem(key, json);
+            })
+            .then(() => undefined);
     }
 
     function ready() {
@@ -160,24 +160,24 @@
         window.GameAssets?.setAppSuspended?.(true);
     }
 
-    async function isAvailableMethod(name) {
+    function isAvailableMethod(name) {
         const bridge = getBridge();
         if (!bridge || sdkState.isLocalMode) {
-            return false;
+            return Promise.resolve(false);
         }
 
         if (name === "leaderboards.setScore") {
-            return Boolean(bridge.leaderboards?.setScore) && bridge.leaderboards.type !== "not_available";
+            return Promise.resolve(Boolean(bridge.leaderboards?.setScore) && bridge.leaderboards.type !== "not_available");
         }
 
         if (name === "leaderboards.getEntries") {
-            return Boolean(bridge.leaderboards?.getEntries) && bridge.leaderboards.type === "in_game";
+            return Promise.resolve(Boolean(bridge.leaderboards?.getEntries) && bridge.leaderboards.type === "in_game");
         }
 
-        return false;
+        return Promise.resolve(false);
     }
 
-    async function showFullscreenAdv() {
+    function showFullscreenAdv() {
         const bridge = getBridge();
 
         if (sdkState.isLocalMode || !bridge?.advertisement?.showInterstitial) {
@@ -225,6 +225,9 @@
                 if (state === "closed") {
                     if (sawOpened) {
                         sdkState.lastInterstitialAt = Date.now();
+                        window.GameAnalytics?.reportAdImpression?.("interstitial", {
+                            placement: PLACEMENT_INTERSTITIAL
+                        });
                     }
 
                     done({ shown: sawOpened, error: undefined });
@@ -247,7 +250,7 @@
         });
     }
 
-    async function showBannerAdv() {
+    function showBannerAdv() {
         const bridge = getBridge();
 
         if (sdkState.isLocalMode || !bridge?.advertisement?.showBanner) {
@@ -258,50 +261,51 @@
             return { stickyAdvIsShowing: false, local: false };
         }
 
-        try {
-            await bridge.advertisement.showBanner("bottom", PLACEMENT_BANNER);
-            const showing = bridge.advertisement.bannerState === "shown";
-            return { stickyAdvIsShowing: showing };
-        } catch (error) {
-            return { stickyAdvIsShowing: false, error };
-        }
+        return bridge.advertisement.showBanner("bottom", PLACEMENT_BANNER)
+            .then(() => {
+                const showing = bridge.advertisement.bannerState === "shown";
+                if (showing) {
+                    window.GameAnalytics?.reportAdImpression?.("banner", {
+                        placement: PLACEMENT_BANNER
+                    });
+                }
+                return { stickyAdvIsShowing: showing };
+            })
+            .catch((error) => ({ stickyAdvIsShowing: false, error }));
     }
 
-    async function hideBannerAdv() {
+    function hideBannerAdv() {
         const bridge = getBridge();
 
         if (sdkState.isLocalMode || !bridge?.advertisement?.hideBanner) {
             return { stickyAdvIsShowing: false, local: true };
         }
 
-        try {
-            await bridge.advertisement.hideBanner();
-            return { stickyAdvIsShowing: false };
-        } catch (error) {
-            return { stickyAdvIsShowing: false, error };
-        }
+        return bridge.advertisement.hideBanner()
+            .then(() => ({ stickyAdvIsShowing: false }))
+            .catch((error) => ({ stickyAdvIsShowing: false, error }));
     }
 
-    async function ensureStickyBannerVisible() {
+    function ensureStickyBannerVisible() {
         if (!window.AdConfig?.stickyBannerEnabled) {
-            return;
+            return Promise.resolve();
         }
 
         const bridge = getBridge();
 
         if (sdkState.isLocalMode || !bridge?.advertisement) {
-            return;
+            return Promise.resolve();
         }
 
-        try {
+        return Promise.resolve().then(() => {
             if (bridge.advertisement.bannerState === "shown") {
                 return;
             }
 
-            await showBannerAdv();
-        } catch (error) {
+            return showBannerAdv();
+        }).catch((error) => {
             void error;
-        }
+        });
     }
 
     function startStickyBannerLoop() {
@@ -318,7 +322,7 @@
         }, recheckMs);
     }
 
-    async function showRewardedVideo() {
+    function showRewardedVideo() {
         const bridge = getBridge();
 
         if (sdkState.isLocalMode || !bridge?.advertisement?.showRewarded) {
@@ -364,9 +368,19 @@
 
                 if (state === "rewarded") {
                     rewarded = true;
+                    window.GameAnalytics?.reportRewardGranted?.({
+                        ad_type: "rewarded",
+                        placement: PLACEMENT_REWARDED
+                    });
                 }
 
                 if (state === "closed" || state === "failed") {
+                    if (sawOpened || rewarded) {
+                        window.GameAnalytics?.reportAdImpression?.("rewarded", {
+                            placement: PLACEMENT_REWARDED,
+                            rewarded
+                        });
+                    }
                     done({
                         shown: sawOpened || rewarded,
                         rewarded,
@@ -389,7 +403,7 @@
         });
     }
 
-    async function submitLeaderboardScore(score, extraData) {
+    function submitLeaderboardScore(score, extraData) {
         void extraData;
         const bridge = getBridge();
 
@@ -397,24 +411,22 @@
             return false;
         }
 
-        const allowed = await isAvailableMethod("leaderboards.setScore");
-        if (!allowed) {
-            return false;
-        }
+        return isAvailableMethod("leaderboards.setScore").then((allowed) => {
+            if (!allowed) {
+                return false;
+            }
 
-        try {
-            await bridge.leaderboards.setScore(
+            return bridge.leaderboards.setScore(
                 window.Base.leaderboardName,
                 Math.max(0, Math.floor(Number(score) || 0))
-            );
-            return true;
-        } catch (error) {
-            console.warn("Leaderboard setScore failed.", error);
-            return false;
-        }
+            ).then(() => true).catch((error) => {
+                console.warn("Leaderboard setScore failed.", error);
+                return false;
+            });
+        });
     }
 
-    async function getLeaderboardEntries(options) {
+    function getLeaderboardEntries(options) {
         void options;
         const bridge = getBridge();
 
@@ -426,8 +438,7 @@
             return null;
         }
 
-        try {
-            const list = await bridge.leaderboards.getEntries(window.Base.leaderboardName);
+        return bridge.leaderboards.getEntries(window.Base.leaderboardName).then((list) => {
             const entries = Array.isArray(list) ? list : [];
 
             return {
@@ -439,10 +450,10 @@
                     }
                 }))
             };
-        } catch (error) {
+        }).catch((error) => {
             console.warn("Leaderboard getEntries failed.", error);
             return null;
-        }
+        });
     }
 
     function getIapDefinitions() {
@@ -533,7 +544,7 @@
         return IAP_KNOWN_IDS.map((id) => byId[id]).filter(Boolean);
     }
 
-    async function refreshIapCatalog() {
+    function refreshIapCatalog() {
         sdkState.iapCatalogById = Object.create(null);
         sdkState.portalCurrencyImage = null;
         sdkState.portalCurrencyImageUrl = "";
@@ -542,11 +553,19 @@
 
         const bridge = getBridge();
         if (bridge?.payments?.getCatalog && bridge.payments.isSupported && !sdkState.isLocalMode) {
-            try {
-                bridgeList = await bridge.payments.getCatalog();
-            } catch (error) {
+            return bridge.payments.getCatalog().then((list) => {
+                bridgeList = list;
+            }).catch((error) => {
                 console.warn("getCatalog failed, using static prices.", error);
-            }
+            }).then(() => {
+                const merged = mergeCatalogRows(bridgeList);
+
+                merged.forEach((product) => {
+                    if (product?.id) {
+                        sdkState.iapCatalogById[product.id] = product;
+                    }
+                });
+            });
         }
 
         const merged = mergeCatalogRows(bridgeList);
@@ -556,10 +575,11 @@
                 sdkState.iapCatalogById[product.id] = product;
             }
         });
+        return Promise.resolve();
     }
 
-    async function loadIapCatalogUiMedia() {
-        await refreshIapCatalog();
+    function loadIapCatalogUiMedia() {
+        return refreshIapCatalog();
     }
 
     function getIapCatalogProduct(productId) {
@@ -576,21 +596,23 @@
         return sdkState.portalCurrencyImage;
     }
 
-    function isPaymentsSupported() {
-        const bridge = getBridge();
-        return Boolean(!sdkState.isLocalMode && bridge?.payments?.isSupported);
-    }
-
-    async function getPurchasesCatalog() {
+    function getPurchasesCatalog() {
         if (IAP_KNOWN_IDS.every((id) => !sdkState.iapCatalogById[id])) {
-            await refreshIapCatalog();
+            return refreshIapCatalog().then(() => IAP_KNOWN_IDS.map((id) => sdkState.iapCatalogById[id]).filter(Boolean));
         }
 
-        return IAP_KNOWN_IDS.map((id) => sdkState.iapCatalogById[id]).filter(Boolean);
+        return Promise.resolve(IAP_KNOWN_IDS.map((id) => sdkState.iapCatalogById[id]).filter(Boolean));
     }
 
-    async function purchaseProduct(productId, developerPayload) {
+    function purchaseProduct(productId, developerPayload) {
         const bridge = getBridge();
+        const product = getIapCatalogProduct(productId);
+        const amount = Number(product?.priceValue);
+        const currencyCode = String(product?.priceCurrencyCode || "");
+
+        window.GameAnalytics?.reportPurchaseAttempt?.(productId, {
+            developer_payload: String(developerPayload || "")
+        });
 
         if (sdkState.isLocalMode || !bridge?.payments?.purchase || !productId) {
             return { success: false, local: sdkState.isLocalMode };
@@ -601,13 +623,17 @@
         }
 
         gameplayStop();
-        try {
-            const pid = String(productId);
-            const purchase = developerPayload
-                ? await bridge.payments.purchase(pid, { developerPayload: String(developerPayload) })
-                : await bridge.payments.purchase(pid);
+        const pid = String(productId);
+        const purchasePromise = developerPayload
+            ? bridge.payments.purchase(pid, { developerPayload: String(developerPayload) })
+            : bridge.payments.purchase(pid);
+
+        return purchasePromise.then((purchase) => {
             gameplayStart();
             const id = purchase?.id || productId;
+            window.GameAnalytics?.reportPurchaseSuccess?.(id, amount, currencyCode, {
+                developer_payload: String(developerPayload || "")
+            });
             return {
                 success: true,
                 purchase: Object.assign({}, purchase, {
@@ -617,49 +643,48 @@
                     productId: id
                 })
             };
-        } catch (error) {
+        }).catch((error) => {
             gameplayStart();
             console.warn("Purchase failed.", error);
             return { success: false, error };
-        }
+        });
     }
 
-    async function consumePurchase(productId) {
+    function consumePurchase(productId) {
         if (sdkState.isLocalMode) {
-            return false;
+            return Promise.resolve(false);
         }
 
         const bridge = getBridge();
         const id = String(productId || "").trim();
 
         if (!bridge?.payments?.consumePurchase || !id) {
-            return false;
+            return Promise.resolve(false);
         }
 
-        try {
-            await bridge.payments.consumePurchase(id);
-            return true;
-        } catch (error) {
-            console.warn("consumePurchase failed.", error);
-            return false;
-        }
+        return bridge.payments.consumePurchase(id)
+            .then(() => true)
+            .catch((error) => {
+                console.warn("consumePurchase failed.", error);
+                return false;
+            });
     }
 
-    async function claimPendingPurchases(grantCallback) {
+    function claimPendingPurchases(grantCallback) {
         if (sdkState.isLocalMode) {
-            return 0;
+            return Promise.resolve(0);
         }
 
         const bridge = getBridge();
 
         if (!bridge?.payments?.getPurchases) {
-            return 0;
+            return Promise.resolve(0);
         }
 
         let claimed = 0;
-        try {
-            const purchases = await bridge.payments.getPurchases();
+        return bridge.payments.getPurchases().then((purchases) => {
             const list = Array.isArray(purchases) ? purchases : [];
+            let chain = Promise.resolve();
 
             for (let index = 0; index < list.length; index += 1) {
                 const item = list[index];
@@ -672,17 +697,17 @@
                 const granted = Boolean(grantCallback(productId, item));
                 if (granted) {
                     claimed += 1;
-                    await consumePurchase(productId);
+                    chain = chain.then(() => consumePurchase(productId));
                 }
             }
-        } catch (error) {
+            return chain.then(() => claimed);
+        }).catch((error) => {
             console.warn("getPurchases failed.", error);
-        }
-
-        return claimed;
+            return claimed;
+        });
     }
 
-    async function fetchRemoteFlags() {
+    function fetchRemoteFlags() {
         const bridge = getBridge();
         const defaults = (window.RemoteFlagsDefaultConfig && typeof window.RemoteFlagsDefaultConfig === "object")
             ? window.RemoteFlagsDefaultConfig
@@ -690,7 +715,7 @@
 
         if (sdkState.isLocalMode || !bridge?.remoteConfig?.get || !bridge.remoteConfig.isSupported) {
             sdkState.remoteFlags = {};
-            return sdkState.remoteFlags;
+            return Promise.resolve(sdkState.remoteFlags);
         }
 
         let options = {};
@@ -703,17 +728,16 @@
             };
         }
 
-        try {
-            const flags = await bridge.remoteConfig.get(options);
+        return bridge.remoteConfig.get(options).then((flags) => {
             const remote = flags && typeof flags === "object" ? flags : {};
             sdkState.remoteFlags = Object.assign({}, defaults, remote);
             applyRemoteFlags(sdkState.remoteFlags);
-        } catch (error) {
+            return sdkState.remoteFlags;
+        }).catch((error) => {
             sdkState.remoteFlags = Object.assign({}, defaults);
             console.warn("Remote flags unavailable.", error);
-        }
-
-        return sdkState.remoteFlags;
+            return sdkState.remoteFlags;
+        });
     }
 
     function applyRemoteFlags(flags) {
@@ -854,7 +878,6 @@
         getPurchasesCatalog,
         getIapCatalogProduct,
         getPortalCurrencyImage,
-        isPaymentsSupported,
         purchaseProduct,
         consumePurchase,
         claimPendingPurchases,

@@ -152,7 +152,7 @@
         return brawlers.concat(ui, effects);
     }
 
-    async function loadAssets(onProgress) {
+    function loadAssets(onProgress) {
         soundKeys.forEach((key) => {
             const extension = key === "bg-music" || key === "coin-scatter" ? "mp3" : "wav";
             createSoundEntry(key, "assets/sounds/" + key + "." + extension);
@@ -170,16 +170,16 @@
 
         notify();
 
-        await Promise.all(manifest.map((entry) => {
+        return Promise.all(manifest.map((entry) => {
             return createImageEntry(entry.key, entry.path, entry.label).then((result) => {
                 loaded += 1;
                 notify();
                 return result;
             });
-        }));
-
-        assets.loaded = true;
-        return assets;
+        })).then(() => {
+            assets.loaded = true;
+            return assets;
+        });
     }
 
     function getImage(key) {

@@ -268,4 +268,8 @@
             }
         ]
     };
+
+    window.AnalyticsConfig = {
+        yandexMetricaCounterId: 109099753
+    };
 }());

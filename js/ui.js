@@ -101,8 +101,112 @@
             sampleElapsedMs: 0,
             lastTierChangeMs: 0
         },
+        tutorial: {
+            pointerPhase: 0,
+            lastTrackedStep: ""
+        },
         renderDpr: 1
     };
+
+    function getTutorialState() {
+        return window.GameState?.tutorial || null;
+    }
+
+    function isTutorialActive() {
+        const tutorial = getTutorialState();
+        return Boolean(tutorial?.enabled) && !Boolean(tutorial?.completed);
+    }
+
+    function getTutorialStep() {
+        if (!isTutorialActive()) {
+            return "none";
+        }
+
+        const tutorial = getTutorialState();
+
+        if ((tutorial?.purchasesDone || 0) < 2) {
+            return "buy";
+        }
+
+        if (!tutorial?.mergeDone) {
+            return "merge";
+        }
+
+        if (!tutorial?.battleButtonDone) {
+            return "battle_button";
+        }
+
+        if (!tutorial?.battleCardsDone) {
+            return uiState.battle.phase === "select" ? "battle_cards" : "battle_button";
+        }
+
+        if (!tutorial?.battlePlayDone) {
+            return uiState.battle.phase === "select" ? "battle_play" : "battle_button";
+        }
+
+        if (!tutorial?.battleConfirmed) {
+            return uiState.battle.phase === "preview" ? "battle_confirm" : "battle_button";
+        }
+
+        return "done";
+    }
+
+    function getTutorialText(step) {
+        if (step === "buy") {
+            return window.GameUtils.translate("tutorial.buy_two_characters");
+        }
+
+        if (step === "merge") {
+            return window.GameUtils.translate("tutorial.merge_one_pair");
+        }
+
+        if (step === "battle_button") {
+            return window.GameUtils.translate("tutorial.press_battle");
+        }
+
+        if (step === "battle_cards") {
+            return window.GameUtils.translate("tutorial.pick_first_three");
+        }
+
+        if (step === "battle_play") {
+            return window.GameUtils.translate("tutorial.press_play");
+        }
+
+        if (step === "battle_confirm") {
+            return window.GameUtils.translate("tutorial.press_accept");
+        }
+
+        return "";
+    }
+
+    function completeTutorialIfDone() {
+        const tutorial = getTutorialState();
+        if (!tutorial || getTutorialStep() !== "done") {
+            return;
+        }
+
+        tutorial.completed = true;
+        tutorial.enabled = false;
+        window.Game.markDirty();
+        window.GameAnalytics?.trackGoal?.("tutorial_complete", {
+            purchases_done: tutorial.purchasesDone
+        });
+    }
+
+    function trackTutorialStepView(step) {
+        if (!isTutorialActive() || !step || step === "none" || step === "done") {
+            return;
+        }
+
+        if (uiState.tutorial.lastTrackedStep === step) {
+            return;
+        }
+
+        uiState.tutorial.lastTrackedStep = step;
+        window.GameAnalytics?.trackGoal?.("tutorial_step_view", {
+            step
+        });
+    }
 
     function detectMobile() {
         try {
@@ -299,6 +403,13 @@
         resize();
         initPerformanceTier();
         startRenderLoop();
+        if (isTutorialActive()) {
+            window.GameAnalytics?.trackGoal?.("tutorial_start", {
+                purchases_done: Number(window.GameState?.tutorial?.purchasesDone) || 0
+            });
+            trackTutorialStepView(getTutorialStep());
+        }
+        completeTutorialIfDone();
     }
 
     function resize() {
@@ -349,6 +460,7 @@
     function handlePointerDown(event) {
         const position = getPointerPosition(event);
 
+        window.GameAnalytics?.markInteractive?.();
         window.GameAssets.startBackgroundMusic();
         uiState.pointer.x = position.x;
         uiState.pointer.y = position.y;
@@ -382,6 +494,11 @@
         }
 
         if (uiState.activePanel) {
+            event.preventDefault();
+            return;
+        }
+
+        if (isTutorialActive() && getTutorialStep() !== "merge") {
             event.preventDefault();
             return;
         }
@@ -489,6 +606,24 @@
             return;
         }
 
+        if (isTutorialActive()) {
+            const step = getTutorialStep();
+
+            if (step === "buy") {
+                handleCharacterOfferClick(position);
+                return;
+            }
+
+            if (step === "battle_button") {
+                handleBottomBoxesClick(position);
+                return;
+            }
+
+            if (step === "merge" || step === "battle_cards" || step === "battle_play" || step === "battle_confirm") {
+                return;
+            }
+        }
+
         if (handleTopBarClick(position)) {
             return;
         }
@@ -573,6 +708,16 @@
             const mergedBrawler = window.Game.mergeBrawlers(brawler.id, mergeTarget.id);
 
             if (mergedBrawler) {
+                const tutorial = getTutorialState();
+                if (isTutorialActive() && getTutorialStep() === "merge" && tutorial && !tutorial.mergeDone) {
+                    tutorial.mergeDone = true;
+                    window.Game.markDirty();
+                    window.GameAnalytics?.trackGoal?.("tutorial_merge_step", {});
+                    window.GameAnalytics?.trackGoal?.("tutorial_step_complete", {
+                        step: "merge"
+                    });
+                    completeTutorialIfDone();
+                }
                 addMergeEffect(mergedBrawler.x, mergedBrawler.y);
                 window.GameAssets.playSound("merge");
                 resetDrag();
@@ -769,6 +914,19 @@
         const brawler = window.Game.buyBrawler(offeredBrawler.type, spawnPosition.x, spawnPosition.y);
 
         if (brawler) {
+            const tutorial = getTutorialState();
+            if (isTutorialActive() && (tutorial?.purchasesDone || 0) < 2) {
+                tutorial.purchasesDone += 1;
+                window.Game.markDirty();
+                window.GameAnalytics?.trackGoal?.("tutorial_buy_step", {
+                    purchases_done: tutorial.purchasesDone
+                });
+                window.GameAnalytics?.trackGoal?.("tutorial_step_complete", {
+                    step: "buy",
+                    purchases_done: tutorial.purchasesDone
+                });
+                completeTutorialIfDone();
+            }
             window.GameAssets.playSound("button");
         }
 
@@ -782,6 +940,9 @@
             }
 
             uiState.battle.skipCooldownPending = true;
+            window.GameAnalytics?.trackGoal?.("monetization_offer_accept", {
+                offer: "battle_skip_rewarded"
+            });
             window.GameSDK.showRewardedVideo()
                 .then((result) => {
                     if (!result?.rewarded) {
@@ -828,6 +989,21 @@
             return;
         }
 
+        if (isTutorialActive() && getTutorialStep() !== "battle_button") {
+            return;
+        }
+
+        const tutorial = getTutorialState();
+        if (isTutorialActive() && tutorial && !tutorial.battleButtonDone) {
+            tutorial.battleButtonDone = true;
+            window.Game.markDirty();
+            window.GameAnalytics?.trackGoal?.("tutorial_battle_button_step", {});
+            window.GameAnalytics?.trackGoal?.("tutorial_step_complete", {
+                step: "battle_button"
+            });
+            completeTutorialIfDone();
+        }
+
         window.GameSDK.showFullscreenAdv()
             .catch(() => null)
             .finally(() => {
@@ -844,6 +1020,9 @@
 
         if (safeSource === "ad") {
             uiState.boxOpening.requestInProgress = true;
+            window.GameAnalytics?.trackGoal?.("monetization_offer_accept", {
+                offer: "ad_box_rewarded"
+            });
             window.GameSDK.showRewardedVideo()
                 .then((result) => {
                     if (!result?.rewarded) {
@@ -1231,6 +1410,10 @@
         const preview = buildBattlePreview(playerTeam);
         uiState.battle.matchPreview = preview;
         uiState.battle.phase = "preview";
+        window.GameAnalytics?.trackGoal?.("battle_preview_open", {
+            selected_count: selectedIds.length,
+            difficulty_tier: preview?.difficultyTier || "unknown"
+        });
         window.GameAssets.playSound("button");
     }
 
@@ -1406,6 +1589,13 @@
             Boolean(isVictory),
             isVictory ? { winCups: victoryCups } : null
         );
+        window.GameAnalytics?.trackGoal?.("battle_finished", {
+            is_victory: Boolean(isVictory),
+            difficulty_tier: uiState.battle.difficultyTier,
+            battle_duration_sec: Math.round(uiState.battle.elapsedMs / 1000),
+            reward_coins: uiState.battle.result.coins,
+            reward_cups: uiState.battle.result.cups
+        });
         if (isVictory) {
             const cooldownSeconds = Math.max(0, Number(window.EconomyConfig?.battleCooldownSeconds) || 30);
             uiState.battle.cooldownUntilMs = Date.now() + cooldownSeconds * 1000;
@@ -1487,6 +1677,10 @@
         return { x: 382, y: 522, width: 182, height: 56 };
     }
 
+    function getBattleLeaveRect() {
+        return { x: 28, y: 630, width: 260, height: 58 };
+    }
+
     function acceptBattlePreview() {
         const preview = uiState.battle.matchPreview;
         if (!preview) {
@@ -1516,8 +1710,35 @@
     }
 
     function handleBattleClick(position) {
+        const tutorial = getTutorialState();
+        const tutorialStep = isTutorialActive() ? getTutorialStep() : "none";
+
+        if ((uiState.battle.phase === "intro" || uiState.battle.phase === "fight") && isInside(position, getBattleLeaveRect())) {
+            finishBattle(false);
+            window.GameAssets.playSound("button");
+            return true;
+        }
+
         if (uiState.battle.phase === "preview") {
+            if (tutorialStep === "battle_confirm") {
+                if (!isInside(position, getBattlePreviewAcceptRect())) {
+                    return true;
+                }
+                if (tutorial && !tutorial.battleConfirmed) {
+                    tutorial.battleConfirmed = true;
+                    window.Game.markDirty();
+                    window.GameAnalytics?.trackGoal?.("tutorial_battle_confirm_step", {});
+                    window.GameAnalytics?.trackGoal?.("tutorial_step_complete", {
+                        step: "battle_confirm"
+                    });
+                    completeTutorialIfDone();
+                }
+            }
+
             if (isInside(position, getBattlePreviewRefuseRect())) {
+                if (tutorialStep === "battle_confirm") {
+                    return true;
+                }
                 uiState.battle.phase = "select";
                 uiState.battle.matchPreview = null;
                 window.GameAssets.playSound("button");
@@ -1546,6 +1767,33 @@
             }
 
             if (isInside(position, getBattlePlayRect())) {
+                if (tutorialStep === "battle_cards") {
+                    window.GameAssets.playSound("lose");
+                    return true;
+                }
+
+                if (tutorialStep === "battle_play") {
+                    const sorted = getBattleSelectionBrawlers();
+                    const expectedIds = sorted.slice(0, 3).map((item) => item.id);
+                    const selectedIds = uiState.battle.selectedIds.slice();
+                    const exactlyExpected = expectedIds.length === 3 &&
+                        expectedIds.every((id) => selectedIds.includes(id)) &&
+                        selectedIds.length === 3;
+
+                    if (!exactlyExpected) {
+                        window.GameAssets.playSound("lose");
+                        return true;
+                    }
+
+                    if (tutorial && !tutorial.battlePlayDone) {
+                        tutorial.battlePlayDone = true;
+                        window.Game.markDirty();
+                        window.GameAnalytics?.trackGoal?.("tutorial_battle_play_step", {});
+                        window.GameAnalytics?.trackGoal?.("tutorial_step_complete", {
+                            step: "battle_play"
+                        });
+                    }
+                }
                 startBattleFromSelection();
                 return true;
             }
@@ -1566,6 +1814,15 @@
                     return true;
                 }
                 const selectedIndex = uiState.battle.selectedIds.indexOf(brawler.id);
+                if (tutorialStep === "battle_cards") {
+                    const sorted = getBattleSelectionBrawlers();
+                    const first3 = sorted.slice(0, 3).map((item) => item.id);
+                    const isAllowed = first3.includes(brawler.id);
+                    if (!isAllowed) {
+                        window.GameAssets.playSound("lose");
+                        return true;
+                    }
+                }
 
                 if (selectedIndex >= 0) {
                     uiState.battle.selectedIds.splice(selectedIndex, 1);
@@ -1575,6 +1832,23 @@
                     window.GameAssets.playSound("button");
                 } else {
                     window.GameAssets.playSound("lose");
+                }
+
+                if (tutorialStep === "battle_cards" && tutorial) {
+                    const sorted = getBattleSelectionBrawlers();
+                    const first3 = sorted.slice(0, 3).map((item) => item.id);
+                    const selectedIds = uiState.battle.selectedIds.slice();
+                    const exactlyExpected = first3.length === 3 &&
+                        first3.every((id) => selectedIds.includes(id)) &&
+                        selectedIds.length === 3;
+                    if (exactlyExpected && !tutorial.battleCardsDone) {
+                        tutorial.battleCardsDone = true;
+                        window.Game.markDirty();
+                        window.GameAnalytics?.trackGoal?.("tutorial_battle_cards_step", {});
+                        window.GameAnalytics?.trackGoal?.("tutorial_step_complete", {
+                            step: "battle_cards"
+                        });
+                    }
                 }
                 return true;
             }
@@ -1648,28 +1922,25 @@
         return selectedType;
     }
 
-    function getSideButtons() {
-        const buttons = [
-            { id: "fighters", icon: "ui:fighters", title: window.GameUtils.translate("menu.fighters") },
-            { id: "shop", icon: "ui:shop", title: window.GameUtils.translate("menu.shop") },
-            { id: "leaderboard", icon: "ui:leaderboard", title: window.GameUtils.translate("menu.leaderboard") }
-        ];
-
-        if (window.GameState?.vipPurchased || isRealMoneyPurchasesAvailable()) {
-            buttons.push({ id: "vip", icon: "ui:vip", title: window.GameUtils.translate("menu.vip") });
-        }
-
-        return buttons;
+    function isPlatformPurchasesSupported() {
+        return Boolean(
+            !window.GameSDK?.state?.isLocalMode &&
+            window.GameSDK?.state?.bridge?.payments?.isSupported
+        );
     }
 
     function getSideButtonRects() {
-        return getSideButtons().map((button, index) => ({
-            id: button.id,
-            x: 30,
-            y: 150 + index * 104,
-            width: 138,
-            height: 92
-        }));
+        const buttons = [
+            { id: "fighters", x: 30, y: 150, width: 138, height: 92 },
+            { id: "shop", x: 30, y: 254, width: 138, height: 92 },
+            { id: "leaderboard", x: 30, y: 358, width: 138, height: 92 }
+        ];
+
+        if (isPlatformPurchasesSupported()) {
+            buttons.push({ id: "vip", x: 30, y: 462, width: 138, height: 92 });
+        }
+
+        return buttons;
     }
 
     function getPanelCloseRect() {
@@ -1859,6 +2130,9 @@
             uiState.activePanel = "upgrades";
             uiState.panel.shopTab = "upgrades";
             uiState.panel.scrollY = 0;
+            window.GameAnalytics?.trackGoal?.("monetization_surface_open", {
+                surface: "shop"
+            });
         } else if (button.id === "leaderboard") {
             uiState.activePanel = "leaderboard";
             uiState.panel.scrollY = 0;
@@ -1866,6 +2140,9 @@
         } else if (button.id === "vip") {
             uiState.activePanel = "vip";
             uiState.panel.scrollY = 0;
+            window.GameAnalytics?.trackGoal?.("monetization_surface_open", {
+                surface: "vip"
+            });
         }
 
         return true;
@@ -1944,26 +2221,20 @@
         };
     }
 
-    function isRealMoneyPurchasesAvailable() {
-        return Boolean(window.GameSDK?.isPaymentsSupported?.());
-    }
-
     function getInAppsPacks() {
         const config = window.InAppPurchaseConfig || {};
         const packs = Array.isArray(config.packs) ? config.packs : [];
         const defaultCurrencyLabel = config.defaultCurrencyLabel || "YAN";
-        const paymentsAvailable = isRealMoneyPurchasesAvailable();
+        const purchasesSupported = Boolean(
+            !window.GameSDK?.state?.isLocalMode &&
+            window.GameSDK?.state?.bridge?.payments?.isSupported
+        );
 
         return packs.map((pack, index) => {
             const coinAmount = Math.max(0, Math.floor(Number(pack.coinAmount) || 0));
             const priceValue = Math.max(0, Math.floor(Number(pack.priceValue) || 0));
             const productId = String(pack.productId || pack.id || ("pack_" + index)).trim();
             const purchaseType = pack.purchaseType === "rewarded" ? "rewarded" : "purchase";
-
-            if (purchaseType === "purchase" && !paymentsAvailable) {
-                return null;
-            }
-
             const entry = {
                 id: pack.id || "pack_" + index,
                 productId,
@@ -1978,7 +2249,6 @@
                 if (catalog) {
                     entry.catalogPrice = catalog.price || "";
                     entry.priceCurrencyCode = catalog.priceCurrencyCode || "";
-                    entry.catalogDescription = String(catalog.description || "").trim();
                     const fromCatalog = Math.floor(Number(catalog.priceValue));
                     if (Number.isFinite(fromCatalog) && fromCatalog > 0) {
                         entry.priceValue = fromCatalog;
@@ -1987,7 +2257,17 @@
             }
 
             return entry;
-        }).filter((pack) => pack && pack.coinAmount > 0);
+        }).filter((pack) => {
+            if (pack.coinAmount <= 0) {
+                return false;
+            }
+
+            if (pack.purchaseType === "purchase" && !purchasesSupported) {
+                return false;
+            }
+
+            return true;
+        }).filter((pack) => pack.coinAmount > 0);
     }
 
     function getInAppsCardRect(index) {
@@ -2101,18 +2381,17 @@
         ].sort((a, b) => b.cups - a.cups).map((entry, index) => Object.assign({}, entry, { rank: index + 1 }));
     }
 
-    async function refreshLeaderboard() {
+    function refreshLeaderboard() {
         if (uiState.leaderboard.isLoading) {
-            return;
+            return Promise.resolve();
         }
 
         uiState.leaderboard.isLoading = true;
-        try {
-            const response = await window.GameSDK.getLeaderboardEntries({
-                quantityTop: 10,
-                includeUser: true,
-                quantityAround: 3
-            });
+        return window.GameSDK.getLeaderboardEntries({
+            quantityTop: 10,
+            includeUser: true,
+            quantityAround: 3
+        }).then((response) => {
             const entries = Array.isArray(response?.entries) ? response.entries : [];
 
             uiState.leaderboard.entries = entries.map((entry, index) => {
@@ -2126,11 +2405,11 @@
                 };
             });
             uiState.leaderboard.requestedAt = performance.now();
-        } catch (error) {
+        }).catch(() => {
             uiState.leaderboard.entries = [];
-        } finally {
+        }).finally(() => {
             uiState.leaderboard.isLoading = false;
-        }
+        });
     }
 
     function startVolumeSliderInteraction(position) {
@@ -2239,6 +2518,10 @@
         uiState.panel.inAppsPurchasePendingId = productId;
 
         if (pack.purchaseType === "rewarded") {
+            window.GameAnalytics?.trackGoal?.("monetization_offer_accept", {
+                offer: "shop_rewarded",
+                product_id: String(productId || "")
+            });
             window.GameSDK.showRewardedVideo()
                 .then((result) => {
                     if (!result?.rewarded) {
@@ -2258,6 +2541,10 @@
             return;
         }
 
+        window.GameAnalytics?.trackGoal?.("monetization_offer_accept", {
+            offer: "shop_iap",
+            product_id: String(productId || "")
+        });
         window.GameSDK.purchaseProduct(productId, "shop_inapp")
             .then((result) => {
                 if (!result?.success) {
@@ -2289,19 +2576,26 @@
         const packs = Array.isArray(window.InAppPurchaseConfig?.packs) ? window.InAppPurchaseConfig.packs : [];
         const vipPack = packs.find((pack) => pack.grantVip);
         const productId = vipPack?.productId || vipPack?.id || "vip_forever";
-        const isPurchaseVip = vipPack?.purchaseType === "purchase";
+        const vipIapSupported = Boolean(
+            !window.GameSDK?.state?.isLocalMode &&
+            window.GameSDK?.state?.bridge?.payments?.isSupported
+        );
 
-        if (isPurchaseVip && !isRealMoneyPurchasesAvailable()) {
-            window.GameAssets.playSound("lose");
-            return true;
-        }
-
-        if (!vipPack || !isPurchaseVip) {
+        if (!vipPack) {
             const result = window.Game.buyVip();
             window.GameAssets.playSound(result?.success ? "button" : "lose");
             return true;
         }
 
+        if (!window.GameState.vipPurchased && !vipIapSupported) {
+            window.GameAssets.playSound("lose");
+            return true;
+        }
+
+        window.GameAnalytics?.trackGoal?.("monetization_offer_accept", {
+            offer: "vip_iap",
+            product_id: String(productId || "")
+        });
         window.GameSDK.purchaseProduct(productId, "vip_panel")
             .then((result) => {
                 if (!result?.success) {
@@ -2344,6 +2638,8 @@
             return;
         }
 
+        trackTutorialStepView(getTutorialStep());
+        window.GameAnalytics?.reportFps?.(deltaSeconds);
         updateDynamicQuality(deltaSeconds);
 
         if (uiState.battle.phase === "fight" || uiState.battle.phase === "intro") {
@@ -2374,6 +2670,7 @@
         if (uiState.battle.phase === "preview") {
             drawBattlePreviewOverlay(ctx);
         }
+        drawTutorialOverlay(ctx, time);
         ctx.restore();
     }
 
@@ -2389,6 +2686,182 @@
         drawCoinFlyEffects(ctx, time);
         drawActivePanel(ctx);
         drawBoxOpeningOverlay(ctx, time);
+    }
+
+    function getTutorialMergePair() {
+        if (!Array.isArray(window.GameState?.brawlers)) {
+            return null;
+        }
+
+        for (let i = 0; i < window.GameState.brawlers.length; i += 1) {
+            const source = window.GameState.brawlers[i];
+            for (let j = i + 1; j < window.GameState.brawlers.length; j += 1) {
+                const target = window.GameState.brawlers[j];
+                if (window.Game.canMergeBrawlers(source, target)) {
+                    return { source, target };
+                }
+            }
+        }
+
+        return null;
+    }
+
+    function getTutorialTarget(step) {
+        if (step === "buy") {
+            return { type: "rect", rect: getCharacterOfferRect(), text: getTutorialText(step) };
+        }
+
+        if (step === "battle_button") {
+            return { type: "rect", rect: getBattleButtonRect(), text: getTutorialText(step) };
+        }
+
+        if (step === "battle_cards" && uiState.battle.phase === "select") {
+            const cards = getBattleSelectionCardRects();
+            if (cards.length >= 3) {
+                const minX = Math.min(cards[0].x, cards[1].x, cards[2].x);
+                const minY = Math.min(cards[0].y, cards[1].y, cards[2].y) - uiState.battle.selectScrollY;
+                const maxX = Math.max(cards[0].x + cards[0].width, cards[1].x + cards[1].width, cards[2].x + cards[2].width);
+                const maxY = Math.max(cards[0].y + cards[0].height, cards[1].y + cards[1].height, cards[2].y + cards[2].height) - uiState.battle.selectScrollY;
+                return {
+                    type: "rect",
+                    rect: { x: minX - 16, y: minY - 14, width: maxX - minX + 32, height: maxY - minY + 28 },
+                    text: getTutorialText(step)
+                };
+            }
+            return { type: "rect", rect: getBattlePlayRect(), text: getTutorialText(step) };
+        }
+
+        if (step === "battle_play" && uiState.battle.phase === "select") {
+            return { type: "rect", rect: getBattlePlayRect(), text: getTutorialText(step) };
+        }
+
+        if (step === "battle_confirm" && uiState.battle.phase === "preview") {
+            return { type: "rect", rect: getBattlePreviewAcceptRect(), text: getTutorialText(step) };
+        }
+
+        if (step === "merge") {
+            const pair = getTutorialMergePair();
+            return { type: "merge", pair, text: getTutorialText(step) };
+        }
+
+        return null;
+    }
+
+    function drawTutorialOverlay(ctx, time) {
+        if (!isTutorialActive() || uiState.boxOpening.active) {
+            return;
+        }
+
+        const step = getTutorialStep();
+        const target = getTutorialTarget(step);
+        if (!target) {
+            return;
+        }
+
+        ctx.save();
+        ctx.fillStyle = "rgba(0, 0, 0, 0.24)";
+        ctx.fillRect(0, 0, window.Base.designWidth, window.Base.designHeight);
+
+        const pulse = 1 + Math.sin(time * 3.2) * 0.07;
+        const swipe = Math.sin(time * 2.4) * 18;
+
+        if (target.type === "rect" && target.rect) {
+            drawTutorialRectHighlight(ctx, target.rect, pulse);
+            drawTutorialHand(ctx, target.rect.x + target.rect.width / 2 + swipe, target.rect.y - 30, 0.88);
+        } else if (target.type === "merge" && target.pair) {
+            drawTutorialMergeGuide(ctx, target.pair.source, target.pair.target, time);
+        }
+
+        drawTutorialLabel(ctx, target.text || getTutorialText(step));
+        ctx.restore();
+    }
+
+    function drawTutorialRectHighlight(ctx, rect, pulse) {
+        const cx = rect.x + rect.width / 2;
+        const cy = rect.y + rect.height / 2;
+        const w = rect.width * pulse;
+        const h = rect.height * pulse;
+
+        ctx.save();
+        ctx.shadowColor = "rgba(93, 220, 255, 0.9)";
+        ctx.shadowBlur = 28;
+        ctx.strokeStyle = "rgba(174, 241, 255, 0.95)";
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        roundRectPath(ctx, cx - w / 2 - 8, cy - h / 2 - 6, w + 16, h + 12, 18);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    function drawTutorialMergeGuide(ctx, source, target, time) {
+        const dx = target.x - source.x;
+        const dy = target.y - source.y;
+        const lineT = (Math.sin(time * 2.2) + 1) / 2;
+        const handX = source.x + dx * lineT;
+        const handY = source.y + dy * lineT - 80;
+
+        ctx.save();
+        ctx.strokeStyle = "rgba(165, 242, 255, 0.9)";
+        ctx.lineWidth = 6;
+        ctx.setLineDash([14, 12]);
+        ctx.beginPath();
+        ctx.moveTo(source.x, source.y);
+        ctx.lineTo(target.x, target.y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.shadowColor = "rgba(93, 220, 255, 0.85)";
+        ctx.shadowBlur = 20;
+        ctx.fillStyle = "rgba(180, 245, 255, 0.24)";
+        ctx.beginPath();
+        ctx.arc(source.x, source.y, BRAWLER_RADIUS + 16, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(target.x, target.y, BRAWLER_RADIUS + 16, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
+        drawTutorialHand(ctx, handX, handY, 0.84);
+    }
+
+    function drawTutorialHand(ctx, x, y, scale) {
+        const s = scale || 1;
+        const baseRadius = 18 * s;
+        const pulse = 1 + Math.sin(performance.now() / 200) * 0.18;
+
+        ctx.save();
+        ctx.shadowColor = "rgba(255, 220, 80, 0.75)";
+        ctx.shadowBlur = 18;
+        ctx.fillStyle = "#ffd200";
+        ctx.beginPath();
+        ctx.arc(x, y, baseRadius * pulse, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.shadowBlur = 0;
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "rgba(120, 86, 10, 0.95)";
+        ctx.beginPath();
+        ctx.arc(x, y, baseRadius * pulse, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.strokeStyle = "rgba(255, 238, 160, 0.8)";
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(x, y, baseRadius * pulse * 1.9, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    function drawTutorialLabel(ctx, text) {
+        if (!text) {
+            return;
+        }
+
+        const rect = { x: 230, y: 18, width: 820, height: 70 };
+        const textLength = String(text).length;
+        const textSize = textLength > 40 ? 24 : textLength > 26 ? 27 : 30;
+        drawPanel(ctx, rect.x, rect.y, rect.width, rect.height, "rgba(16, 24, 52, 0.88)");
+        drawText(ctx, text, rect.x + rect.width / 2, rect.y + rect.height / 2 + 1, textSize, "center");
     }
 
     function drawBackground(ctx, time) {
@@ -2860,13 +3333,21 @@
     }
 
     function drawSideButtons(ctx) {
-        const buttons = getSideButtons();
         const rects = getSideButtonRects();
+        const viewById = {
+            fighters: { icon: "ui:fighters", label: window.GameUtils.translate("menu.fighters") },
+            shop: { icon: "ui:shop", label: window.GameUtils.translate("menu.shop") },
+            leaderboard: { icon: "ui:leaderboard", label: window.GameUtils.translate("menu.leaderboard") },
+            vip: { icon: "ui:vip", label: window.GameUtils.translate("menu.vip") }
+        };
 
-        buttons.forEach((button, index) => {
-            const rect = rects[index];
+        rects.forEach((rect) => {
+            const view = viewById[rect.id];
+            if (!view) {
+                return;
+            }
 
-            drawButton(ctx, rect.x, rect.y, rect.width, rect.height, button.icon, button.title, {
+            drawButton(ctx, rect.x, rect.y, rect.width, rect.height, view.icon, view.label, {
                 iconSize: 66,
                 iconOffsetY: -12,
                 textSize: 21,
@@ -3438,6 +3919,10 @@
         drawBattleImpacts(ctx, battleTimeSeconds);
         drawBattleDamageTexts(ctx, battleTimeSeconds);
 
+        if (uiState.battle.phase === "intro" || uiState.battle.phase === "fight") {
+            drawBattleLeaveButton(ctx);
+        }
+
         if (uiState.battle.phase === "intro") {
             drawBattleIntroOverlay(ctx);
         }
@@ -3445,6 +3930,14 @@
         if (uiState.battle.phase === "result") {
             drawBattleResultOverlay(ctx);
         }
+    }
+
+    function drawBattleLeaveButton(ctx) {
+        const rect = getBattleLeaveRect();
+        const label = window.GameUtils.translate("battle.leave");
+        const textSize = String(label).length > 12 ? 24 : 27;
+        drawInteractivePanel(ctx, rect, "#d64155", "#ef4b62");
+        drawText(ctx, label, rect.x + rect.width / 2, rect.y + rect.height / 2 + 1, textSize, "center");
     }
 
     function drawActivePanel(ctx) {
@@ -3880,12 +4373,6 @@
                 20,
                 "left"
             );
-            if (!isRewarded && pack.catalogDescription) {
-                const desc = pack.catalogDescription.length > 72
-                    ? pack.catalogDescription.slice(0, 69) + "..."
-                    : pack.catalogDescription;
-                drawText(ctx, desc, card.x + 24, card.y + 86, 14, "left");
-            }
             drawInteractivePanel(ctx, buttonRect, isPending ? "#5f6a89" : "#23c26b", isPending ? "#5f6a89" : "#31d77d");
             if (isRewarded && !isPending) {
                 drawVideoBadge(ctx, buttonRect.x + 8, buttonRect.y + 8, 24);
@@ -3969,22 +4456,17 @@
                 "vip_forever"
         ).trim();
         const vipCatalog = window.GameSDK?.getIapCatalogProduct?.(vipProductId);
-        const isPurchaseVip = vipPackCfg?.purchaseType === "purchase";
-        const isCoinFallbackVip = !vipPackCfg || !isPurchaseVip;
-        const canShowPurchaseVip = !isPurchaseVip || isRealMoneyPurchasesAvailable();
+        const isCoinFallbackVip = !vipPackCfg || vipPackCfg.purchaseType !== "purchase";
+        const vipIapSupported = Boolean(
+            !window.GameSDK?.state?.isLocalMode &&
+            window.GameSDK?.state?.bridge?.payments?.isSupported
+        );
 
         drawText(ctx, window.GameUtils.translate("vip.benefit_income"), textBlockX, body.y + 126, 21, "left");
         drawText(ctx, window.GameUtils.translate("vip.benefit_cooldown"), textBlockX, body.y + 160, 21, "left");
         drawText(ctx, window.GameUtils.translate("vip.benefit_cooldown_line2"), textBlockX, body.y + 188, 21, "left");
         drawText(ctx, window.GameUtils.translate("vip.benefit_discount"), textBlockX, body.y + 216, 21, "left");
         drawText(ctx, window.GameUtils.translate("vip.benefit_discount_line2"), textBlockX, body.y + 244, 21, "left");
-
-        if (!window.GameState.vipPurchased && !isCoinFallbackVip && vipCatalog?.description) {
-            const vipDesc = String(vipCatalog.description).length > 90
-                ? String(vipCatalog.description).slice(0, 87) + "..."
-                : String(vipCatalog.description);
-            drawText(ctx, vipDesc, textBlockX, body.y + 272, 15, "left");
-        }
 
         const vipBuyRect = { x: textBlockX, y: body.y + 332, width: textBlockWidth, height: 52 };
 
@@ -3999,19 +4481,25 @@
             );
         }
 
-        if (window.GameState.vipPurchased || canShowPurchaseVip) {
-            drawInteractivePanel(ctx, vipBuyRect, "#23c26b", "#31d77d");
-            drawText(
-                ctx,
-                window.GameUtils.translate(window.GameState.vipPurchased ? "vip.status_active" : "vip.buy_vip"),
-                textBlockX + textBlockWidth / 2,
-                body.y + 358,
-                23,
-                "center"
-            );
-        }
+        const vipUnavailable = !window.GameState.vipPurchased && !isCoinFallbackVip && !vipIapSupported;
+        drawInteractivePanel(
+            ctx,
+            vipBuyRect,
+            vipUnavailable ? "#5f6a89" : "#23c26b",
+            vipUnavailable ? "#5f6a89" : "#31d77d"
+        );
+        drawText(
+            ctx,
+            vipUnavailable
+                ? window.GameUtils.translate("base.unavailable")
+                : window.GameUtils.translate(window.GameState.vipPurchased ? "vip.status_active" : "vip.buy_vip"),
+            textBlockX + textBlockWidth / 2,
+            body.y + 358,
+            23,
+            "center"
+        );
 
-        if (!window.GameState.vipPurchased && !isCoinFallbackVip && canShowPurchaseVip) {
+        if (!window.GameState.vipPurchased && !isCoinFallbackVip) {
             const priceLine = formatVipPanelPriceText(vipPackCfg, vipCatalog);
             const priceY = vipBuyRect.y + vipBuyRect.height + 14;
 
