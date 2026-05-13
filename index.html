@@ -18,11 +18,24 @@
     <script defer src="js/main.js"></script>
 </head>
 <body>
+    <script>
+        (function () {
+            function block(event) {
+                event.preventDefault();
+            }
+            document.addEventListener("contextmenu", block, true);
+            document.addEventListener("selectstart", block, true);
+            document.addEventListener("dragstart", block, true);
+        })();
+    </script>
     <div id="game-root">
         <canvas id="game-canvas" width="1280" height="720" aria-label="Game canvas"></canvas>
         <div id="dom-ui" aria-live="polite"></div>
         <div id="loading-screen">
             <div class="loading-card">
+                <div class="loading-ring-wrap" aria-hidden="true">
+                    <div class="loading-ring"></div>
+                </div>
                 <div class="loading-title" id="loading-title"></div>
                 <div class="loading-text" id="loading-text"></div>
                 <div class="loading-bar">

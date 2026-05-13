@@ -7,7 +7,10 @@
         saveVersion: 1,
         leaderboardName: "cups",
         defaultLanguage: "ru",
-        supportedLanguages: ["ru"],
+        supportedLanguages: [
+            "ru", "en", "es", "tr", "de", "fr", "ar", "az", "zh", "nl",
+            "hi", "id", "it", "ja", "ko", "kk", "pl", "pt", "th", "uk", "uz", "vi"
+        ],
         designWidth: 1280,
         designHeight: 720,
         portraitDesignWidth: 720,
@@ -21,6 +24,8 @@
 
     window.EconomyConfig = {
         startCoins: 100,
+        /** Пока обучение не завершено, монеты не опускаются ниже этого порога (два покупки персонажей и дальше). */
+        tutorialPlayMinCoins: 1000,
         startCups: 0,
         startProgressCubes: 0,
         clickBaseReward: 1,
@@ -266,7 +271,4 @@
         ]
     };
 
-    window.AnalyticsConfig = {
-        yandexMetricaCounterId: 109099753
-    };
 }());

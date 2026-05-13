@@ -5,9 +5,6 @@
     const MS_IN_DAY = 24 * 60 * 60 * 1000;
 
     const runtime = {
-        counterId: 0,
-        metricaReady: false,
-        queue: [],
         sessionStartedAtMs: 0,
         gameReadyReported: false,
         interactiveReported: false,
@@ -90,64 +87,12 @@
         return "direct";
     }
 
-    function injectMetricaTag(counterId) {
-        if (document.getElementById("yandex-metrika-tag")) {
-            return;
-        }
-
-        (function (m, e, t, r, i, k, a) {
-            m[i] = m[i] || function () {
-                (m[i].a = m[i].a || []).push(arguments);
-            };
-            m[i].l = 1 * new Date();
-            for (let j = 0; j < document.scripts.length; j += 1) {
-                if (document.scripts[j].src === r) {
-                    return;
-                }
-            }
-            k = e.createElement(t);
-            a = e.getElementsByTagName(t)[0];
-            k.async = 1;
-            k.src = r;
-            k.id = "yandex-metrika-tag";
-            a.parentNode.insertBefore(k, a);
-        }(window, document, "script", "https://mc.yandex.ru/metrika/tag.js", "ym"));
-
-        window.ym(counterId, "init", {
-            clickmap: true,
-            trackLinks: true,
-            accurateTrackBounce: true,
-            webvisor: false
-        });
-    }
-
     function trackGoal(name, params) {
-        if (!name || !runtime.counterId) {
-            return;
-        }
-
-        const payload = Object.assign({
-            user_id: state.userId,
-            sessions_count: state.sessionsCount
-        }, params || {});
-
-        if (typeof window.ym === "function") {
-            window.ym(runtime.counterId, "reachGoal", name, payload);
-            return;
-        }
-
-        runtime.queue.push({ name, payload });
+        void name;
+        void params;
     }
 
     function flushQueue() {
-        if (typeof window.ym !== "function" || !runtime.counterId || runtime.queue.length === 0) {
-            return;
-        }
-
-        while (runtime.queue.length > 0) {
-            const item = runtime.queue.shift();
-            window.ym(runtime.counterId, "reachGoal", item.name, item.payload);
-        }
     }
 
     function reportRetentionMilestones(nowMs) {
@@ -180,16 +125,7 @@
         }
     }
 
-    function init(counterId) {
-        const safeCounterId = Math.max(0, Math.floor(Number(counterId) || 0));
-        if (!safeCounterId) {
-            return;
-        }
-
-        runtime.counterId = safeCounterId;
-        injectMetricaTag(safeCounterId);
-        runtime.metricaReady = true;
-        flushQueue();
+    function init() {
     }
 
     function sessionStart(extra) {

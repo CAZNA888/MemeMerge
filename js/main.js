@@ -14,7 +14,7 @@
     }
 
     function start() {
-        window.GameAnalytics?.init?.(window.AnalyticsConfig?.yandexMetricaCounterId);
+        window.GameAnalytics?.init?.();
         const titleElement = document.getElementById("loading-title");
         const textElement = document.getElementById("loading-text");
         let loadingDotsTimerId = 0;

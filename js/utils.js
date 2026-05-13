@@ -30,6 +30,10 @@
         let value = localeDict ? deepGet(localeDict, key) : undefined;
 
         if (value === undefined || value === null) {
+            value = deepGet(window.Localization?.en, key);
+        }
+
+        if (value === undefined || value === null) {
             value = deepGet(window.Localization?.ru, key);
         }
 
@@ -65,7 +69,8 @@
         effects: ["bullet", "merge", "cartoon"]
     };
 
-    const soundKeys = ["bg-music", "click", "shoot", "merge", "box", "win", "lose", "button", "coin-scatter"];
+
+
     const soundVolumes = {
         "bg-music": 0.35,
         "box": 0.45,
@@ -74,20 +79,120 @@
         "lose": 0.42
     };
 
+    const soundKeys = ["bg-music", "click", "shoot", "merge", "box", "win", "lose", "button", "coin-scatter"];
+
     const assets = {
         loaded: false,
         images: {},
         sounds: {},
         soundLastPlay: Object.create(null),
         appSuspended: false,
+        webAudio: null,
         music: {
             started: false,
-            synthContext: null,
+            fileSource: null,
             synthGain: null,
             synthTimerId: 0,
             synthStep: 0
         }
     };
+
+    function getOrCreateWebAudio() {
+        if (assets.webAudio) {
+            return assets.webAudio;
+        }
+
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+
+        if (!AudioContextClass) {
+            return null;
+        }
+
+        const context = new AudioContextClass();
+        const masterGain = context.createGain();
+        masterGain.gain.value = 1;
+        masterGain.connect(context.destination);
+
+        const musicGain = context.createGain();
+        musicGain.gain.value = 0.28;
+        musicGain.connect(masterGain);
+
+        assets.webAudio = {
+            context,
+            masterGain,
+            musicGain
+        };
+
+        return assets.webAudio;
+    }
+
+    function resumeAudioContextIfNeeded() {
+        const ctx = assets.webAudio?.context;
+
+        if (ctx && ctx.state === "suspended" && typeof ctx.resume === "function") {
+            ctx.resume().catch(() => {});
+        }
+    }
+
+    async function decodeSoundAsset(key) {
+        const sound = assets.sounds[key];
+
+        if (!sound) {
+            return sound;
+        }
+
+        try {
+            const response = await fetch(sound.path);
+
+            if (!response.ok) {
+                throw new Error("sound_fetch");
+            }
+
+            const arrayBuffer = await response.arrayBuffer();
+            const wa = getOrCreateWebAudio();
+
+            if (!wa) {
+                sound.missing = true;
+                return sound;
+            }
+
+            sound.buffer = await wa.context.decodeAudioData(arrayBuffer.slice(0));
+        } catch (error) {
+            sound.missing = true;
+        }
+
+        return sound;
+    }
+
+    function stopFileBackgroundMusic() {
+        if (assets.music.fileSource) {
+            try {
+                assets.music.fileSource.stop(0);
+            } catch (error) {
+                void error;
+            }
+
+            try {
+                assets.music.fileSource.disconnect();
+            } catch (error) {
+                void error;
+            }
+
+            assets.music.fileSource = null;
+        }
+    }
+
+    function updateMusicGainFromSettings() {
+        const wa = assets.webAudio;
+
+        if (!wa?.musicGain) {
+            return;
+        }
+
+        const musicVolume = window.GameState?.settings?.musicVolume ?? 1;
+
+        wa.musicGain.gain.value = clamp(0.28 * musicVolume, 0, 1);
+    }
 
     function createImageEntry(key, path, label) {
         return new Promise((resolve) => {
@@ -116,27 +221,23 @@
         });
     }
 
-    function createSoundEntry(key, path, options) {
-        const audio = new Audio(path);
-        audio.preload = (options && options.preload) || "auto";
-        audio.volume = Number.isFinite(soundVolumes[key]) ? soundVolumes[key] : 0.6;
-        audio.loop = key === "bg-music";
-
-        assets.sounds[key] = {
-            key,
-            path,
-            audio,
-            missing: false
-        };
-    }
-
     function ensureSoundLoaded(key) {
         if (assets.sounds[key]) {
             return;
         }
 
         const extension = key === "bg-music" || key === "coin-scatter" ? "mp3" : "wav";
-        createSoundEntry(key, "assets/sounds/" + key + "." + extension, { preload: "none" });
+        const path = "assets/sounds/" + key + "." + extension;
+        const sound = {
+            key,
+            path,
+            buffer: null,
+            missing: false,
+            decodePromise: null
+        };
+
+        assets.sounds[key] = sound;
+        sound.decodePromise = decodeSoundAsset(key);
     }
 
     function getImageManifest() {
@@ -161,7 +262,6 @@
         return brawlers.concat(ui, effects);
     }
 
-    /** Full-screen backdrop; defer start so lighter UI icons populate first on slow links. */
     const deferredImageLoadKeys = new Set(["ui:background"]);
 
     function loadAssets(onProgress) {
@@ -205,7 +305,10 @@
             onProgress(1);
         }
 
-        return Promise.resolve(assets);
+        soundKeys.forEach((key) => ensureSoundLoaded(key));
+        const soundDecodePromises = soundKeys.map((key) => assets.sounds[key].decodePromise);
+
+        return Promise.all(soundDecodePromises).then(() => assets);
     }
 
     function getImage(key) {
@@ -351,7 +454,7 @@
         ensureSoundLoaded(key);
         const sound = assets.sounds[key];
 
-        if (!sound || !sound.audio || window.GameState?.settings?.sound === false) {
+        if (!sound || sound.missing || !sound.buffer || window.GameState?.settings?.sound === false) {
             return;
         }
 
@@ -371,11 +474,25 @@
             assets.soundLastPlay[key] = now;
         }
 
+        const wa = getOrCreateWebAudio();
+
+        if (!wa) {
+            return;
+        }
+
         try {
-            const audio = sound.audio.cloneNode();
+            const ctx = wa.context;
             const volumeScale = window.GameState?.settings?.soundVolume ?? 1;
-            audio.volume = window.GameUtils.clamp(sound.audio.volume * volumeScale, 0, 1);
-            audio.play().catch(() => {});
+            const baseVol = Number.isFinite(soundVolumes[key]) ? soundVolumes[key] : 0.6;
+            const gainNode = ctx.createGain();
+            gainNode.gain.value = clamp(baseVol * volumeScale, 0, 1);
+
+            const source = ctx.createBufferSource();
+            source.buffer = sound.buffer;
+            source.connect(gainNode);
+            gainNode.connect(wa.masterGain);
+            resumeAudioContextIfNeeded();
+            source.start(0);
         } catch (error) {
             console.warn("Sound playback failed:", key, error);
         }
@@ -391,11 +508,11 @@
     }
 
     function startSynthNoteInterval() {
-        if (!assets.music.synthContext || !assets.music.synthGain || assets.music.synthTimerId) {
+        if (!assets.webAudio?.context || !assets.music.synthGain || assets.music.synthTimerId) {
             return;
         }
 
-        const context = assets.music.synthContext;
+        const context = assets.webAudio.context;
         const gain = assets.music.synthGain;
 
         assets.music.synthTimerId = window.setInterval(() => {
@@ -418,20 +535,10 @@
     }
 
     function pauseBackgroundAudio() {
-        const bg = assets.sounds["bg-music"]?.audio;
-
-        if (bg) {
-            try {
-                bg.pause();
-            } catch (error) {
-                void error;
-            }
-        }
-
         stopSynthNoteInterval();
 
-        if (assets.music.synthContext && typeof assets.music.synthContext.suspend === "function") {
-            assets.music.synthContext.suspend().catch(() => {});
+        if (assets.webAudio?.context && typeof assets.webAudio.context.suspend === "function") {
+            assets.webAudio.context.suspend().catch(() => {});
         }
     }
 
@@ -444,17 +551,15 @@
             return;
         }
 
-        const bg = assets.sounds["bg-music"]?.audio;
+        const ctx = assets.webAudio?.context;
 
-        if (bg) {
-            bg.play().catch(() => {});
-        }
-
-        if (assets.music.synthContext && typeof assets.music.synthContext.resume === "function") {
-            assets.music.synthContext.resume().then(() => {
-                startSynthNoteInterval();
+        if (ctx && typeof ctx.resume === "function") {
+            ctx.resume().then(() => {
+                if (!assets.music.fileSource && assets.music.synthGain) {
+                    startSynthNoteInterval();
+                }
             }).catch(() => {});
-        } else {
+        } else if (!assets.music.fileSource && assets.music.synthGain) {
             startSynthNoteInterval();
         }
     }
@@ -479,6 +584,51 @@
         return Boolean(assets.appSuspended);
     }
 
+    function tryStartFileBackgroundMusic(sound) {
+        const wa = getOrCreateWebAudio();
+
+        if (!wa || !sound.buffer) {
+            startSynthMusic();
+            return;
+        }
+
+        try {
+            stopSynthNoteInterval();
+
+            if (assets.music.synthGain) {
+                try {
+                    assets.music.synthGain.disconnect();
+                } catch (error) {
+                    void error;
+                }
+
+                assets.music.synthGain = null;
+            }
+
+            stopFileBackgroundMusic();
+
+            const ctx = wa.context;
+            const source = ctx.createBufferSource();
+
+            source.buffer = sound.buffer;
+            source.loop = true;
+            source.connect(wa.musicGain);
+            updateMusicGainFromSettings();
+            source.start(0);
+            assets.music.fileSource = source;
+            assets.music.started = true;
+            ctx.resume().catch(() => {
+                assets.music.started = false;
+                stopFileBackgroundMusic();
+                startSynthMusic();
+            });
+        } catch (error) {
+            assets.music.started = false;
+            stopFileBackgroundMusic();
+            startSynthMusic();
+        }
+    }
+
     function startBackgroundMusic() {
         if (assets.music.started || window.GameState?.settings?.music === false) {
             return;
@@ -487,26 +637,28 @@
         ensureSoundLoaded("bg-music");
         const sound = assets.sounds["bg-music"];
 
-        if (!sound || !sound.audio) {
+        if (!sound) {
             startSynthMusic();
             return;
         }
 
-        try {
-            sound.audio.currentTime = 0;
-            const musicVolume = window.GameState?.settings?.musicVolume ?? 1;
-            sound.audio.volume = window.GameUtils.clamp(0.28 * musicVolume, 0, 1);
-            sound.audio.loop = true;
-            assets.music.started = true;
-            sound.audio.play()
-                .catch(() => {
-                    assets.music.started = false;
-                    startSynthMusic();
-                });
-        } catch (error) {
-            assets.music.started = false;
-            startSynthMusic();
+        if (sound.buffer) {
+            tryStartFileBackgroundMusic(sound);
+            return;
         }
+
+        if (sound.missing) {
+            startSynthMusic();
+            return;
+        }
+
+        sound.decodePromise?.then(() => {
+            if (assets.music.started || window.GameState?.settings?.music === false) {
+                return;
+            }
+
+            startBackgroundMusic();
+        });
     }
 
     function startSynthMusic() {
@@ -514,22 +666,36 @@
             return;
         }
 
-        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        const wa = getOrCreateWebAudio();
 
-        if (!AudioContextClass) {
+        if (!wa) {
             return;
         }
 
-        const context = new AudioContextClass();
+        stopFileBackgroundMusic();
+        stopSynthNoteInterval();
+
+        if (assets.music.synthGain) {
+            try {
+                assets.music.synthGain.disconnect();
+            } catch (error) {
+                void error;
+            }
+
+            assets.music.synthGain = null;
+        }
+
+        const context = wa.context;
         const gain = context.createGain();
         const musicVolume = window.GameState?.settings?.musicVolume ?? 1;
 
         gain.gain.value = 0.025 * musicVolume;
-        gain.connect(context.destination);
-        assets.music.synthContext = context;
+        gain.connect(wa.masterGain);
         assets.music.synthGain = gain;
         assets.music.started = true;
-        startSynthNoteInterval();
+        context.resume().then(() => {
+            startSynthNoteInterval();
+        }).catch(() => {});
     }
 
     window.GameUtils = {
@@ -542,14 +708,11 @@
 
     function refreshAudioSettings() {
         ensureSoundLoaded("bg-music");
-        const musicVolume = window.GameState?.settings?.musicVolume ?? 1;
-        const bgMusic = assets.sounds["bg-music"]?.audio;
-
-        if (bgMusic) {
-            bgMusic.volume = window.GameUtils.clamp(0.28 * musicVolume, 0, 1);
-        }
+        updateMusicGainFromSettings();
 
         if (assets.music.synthGain) {
+            const musicVolume = window.GameState?.settings?.musicVolume ?? 1;
+
             assets.music.synthGain.gain.value = 0.025 * musicVolume;
         }
     }

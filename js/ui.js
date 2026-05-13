@@ -19,6 +19,7 @@
         scale: 1,
         offsetX: 0,
         offsetY: 0,
+        portraitGameLayout: false,
         frameId: 0,
         lastTime: 0,
         pointer: {
@@ -105,7 +106,9 @@
             pointerPhase: 0,
             lastTrackedStep: ""
         },
-        renderDpr: 1
+        renderDpr: 1,
+        /** Подавление двойного срабатывания, когда WebView шлёт и Pointer, и Touch за один жест. */
+        lastInputEcho: null
     };
 
     function getTutorialState() {
@@ -115,6 +118,21 @@
     function isTutorialActive() {
         const tutorial = getTutorialState();
         return Boolean(tutorial?.enabled) && !Boolean(tutorial?.completed);
+    }
+
+    function ensureTutorialMinCoins() {
+        if (!isTutorialActive() || !window.GameState) {
+            return;
+        }
+
+        const configuredMinCoins = Math.floor(Number(window.EconomyConfig?.tutorialPlayMinCoins) || 0);
+        const minCoins = Math.max(1000, configuredMinCoins);
+        const currentCoins = Math.floor(Number(window.GameState.coins) || 0);
+
+        if (currentCoins < minCoins) {
+            window.GameState.coins = minCoins;
+            window.Game.markDirty();
+        }
     }
 
     function getTutorialStep() {
@@ -395,15 +413,23 @@
         uiState.canvas = document.getElementById("game-canvas");
         uiState.context = uiState.canvas.getContext("2d");
         window.addEventListener("resize", resize);
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener("resize", resize);
+        }
         uiState.canvas.addEventListener("pointerdown", handlePointerDown);
         uiState.canvas.addEventListener("pointermove", handlePointerMove);
         uiState.canvas.addEventListener("pointerup", handlePointerUp);
         uiState.canvas.addEventListener("pointercancel", handlePointerCancel);
         uiState.canvas.addEventListener("wheel", handleWheel, { passive: false });
+        uiState.canvas.addEventListener("touchstart", handleTouchStart, { passive: false });
+        uiState.canvas.addEventListener("touchmove", handleTouchMove, { passive: false });
+        uiState.canvas.addEventListener("touchend", handleTouchEnd, { passive: false });
+        uiState.canvas.addEventListener("touchcancel", handleTouchCancel, { passive: false });
         resize();
         initPerformanceTier();
         startRenderLoop();
         if (isTutorialActive()) {
+            ensureTutorialMinCoins();
             window.GameAnalytics?.trackGoal?.("tutorial_start", {
                 purchases_done: Number(window.GameState?.tutorial?.purchasesDone) || 0
             });
@@ -424,9 +450,21 @@
         uiState.canvas.width = uiState.width;
         uiState.canvas.height = uiState.height;
         uiState.context.setTransform(renderDpr, 0, 0, renderDpr, 0, 0);
-        uiState.scale = Math.min(rect.width / window.Base.designWidth, rect.height / window.Base.designHeight);
-        uiState.offsetX = (rect.width - window.Base.designWidth * uiState.scale) / 2;
-        uiState.offsetY = (rect.height - window.Base.designHeight * uiState.scale) / 2;
+
+        const dw = window.Base.designWidth;
+        const dh = window.Base.designHeight;
+        const portrait = rect.height > rect.width;
+        uiState.portraitGameLayout = portrait;
+
+        if (portrait) {
+            uiState.scale = Math.min(rect.width / dh, rect.height / dw);
+            uiState.offsetX = (rect.width - dh * uiState.scale) / 2;
+            uiState.offsetY = (rect.height - dw * uiState.scale) / 2;
+        } else {
+            uiState.scale = Math.min(rect.width / dw, rect.height / dh);
+            uiState.offsetX = (rect.width - dw * uiState.scale) / 2;
+            uiState.offsetY = (rect.height - dh * uiState.scale) / 2;
+        }
     }
 
     function startRenderLoop() {
@@ -448,13 +486,65 @@
         uiState.frameId = window.requestAnimationFrame(tick);
     }
 
-    function getPointerPosition(event) {
+    function getPointerPositionFromClient(clientX, clientY) {
         const rect = uiState.canvas.getBoundingClientRect();
+        const sx = clientX - rect.left;
+        const sy = clientY - rect.top;
+        const s = uiState.scale;
+
+        if (uiState.portraitGameLayout) {
+            const gx = (sy - uiState.offsetY) / s;
+            const gy = window.Base.designWidth - (sx - uiState.offsetX) / s;
+            return { x: gx, y: gy };
+        }
 
         return {
-            x: (event.clientX - rect.left - uiState.offsetX) / uiState.scale,
-            y: (event.clientY - rect.top - uiState.offsetY) / uiState.scale
+            x: (sx - uiState.offsetX) / s,
+            y: (sy - uiState.offsetY) / s
         };
+    }
+
+    function getPointerPosition(event) {
+        return getPointerPositionFromClient(event.clientX, event.clientY);
+    }
+
+    function isCrossChannelInputEcho(clientX, clientY, channel) {
+        const prev = uiState.lastInputEcho;
+
+        if (!prev || prev.channel === channel) {
+            return false;
+        }
+
+        const dt = performance.now() - prev.at;
+
+        if (dt > 90 || dt < 0) {
+            return false;
+        }
+
+        const dist = Math.hypot(clientX - prev.clientX, clientY - prev.clientY);
+
+        return dist < 28;
+    }
+
+    function recordInputEcho(clientX, clientY, channel) {
+        uiState.lastInputEcho = {
+            at: performance.now(),
+            clientX,
+            clientY,
+            channel
+        };
+    }
+
+    function trySetPointerCapture(pointerId) {
+        if (typeof pointerId === "number" && pointerId >= 0) {
+            uiState.canvas.setPointerCapture?.(pointerId);
+        }
+    }
+
+    function tryReleasePointerCapture(pointerId) {
+        if (typeof pointerId === "number" && pointerId >= 0) {
+            uiState.canvas.releasePointerCapture?.(pointerId);
+        }
     }
 
     function handlePointerDown(event) {
@@ -465,7 +555,7 @@
         uiState.pointer.x = position.x;
         uiState.pointer.y = position.y;
         uiState.pointer.isDown = true;
-        uiState.pointer.id = event.pointerId;
+        uiState.pointer.id = typeof event.pointerId === "number" && event.pointerId >= 0 ? event.pointerId : null;
 
         if (uiState.boxOpening.active) {
             event.preventDefault();
@@ -478,7 +568,7 @@
         }
 
         if (uiState.activePanel === "settings" && startVolumeSliderInteraction(position)) {
-            uiState.canvas.setPointerCapture?.(event.pointerId);
+            trySetPointerCapture(event.pointerId);
             event.preventDefault();
             return;
         }
@@ -488,7 +578,7 @@
         if (scrollViewport && isInside(position, scrollViewport) && shouldStartPanelScroll(position)) {
             uiState.panel.isScrolling = true;
             uiState.panel.lastPointerY = position.y;
-            uiState.canvas.setPointerCapture?.(event.pointerId);
+            trySetPointerCapture(event.pointerId);
             event.preventDefault();
             return;
         }
@@ -514,9 +604,79 @@
             uiState.drag.startPointerX = position.x;
             uiState.drag.startPointerY = position.y;
             uiState.drag.hasMoved = false;
-            uiState.canvas.setPointerCapture?.(event.pointerId);
+            trySetPointerCapture(event.pointerId);
             event.preventDefault();
         }
+    }
+
+    function handleTouchStart(event) {
+        if (!event.touches || event.touches.length !== 1) {
+            return;
+        }
+
+        event.preventDefault();
+        const touch = event.touches[0];
+        const synthetic = {
+            clientX: touch.clientX,
+            clientY: touch.clientY,
+            pointerId: -1,
+            __touchCompat: true,
+            preventDefault: () => event.preventDefault()
+        };
+
+        handlePointerDown(synthetic);
+    }
+
+    function handleTouchMove(event) {
+        if (!event.touches || event.touches.length !== 1) {
+            return;
+        }
+
+        const touch = event.touches[0];
+        const synthetic = {
+            clientX: touch.clientX,
+            clientY: touch.clientY,
+            preventDefault: () => event.preventDefault()
+        };
+
+        handlePointerMove(synthetic);
+    }
+
+    function handleTouchEnd(event) {
+        const touch = event.changedTouches && event.changedTouches[0];
+
+        if (!touch) {
+            return;
+        }
+
+        event.preventDefault();
+        const synthetic = {
+            clientX: touch.clientX,
+            clientY: touch.clientY,
+            pointerId: -1,
+            __touchCompat: true,
+            preventDefault: () => event.preventDefault()
+        };
+
+        handlePointerUp(synthetic);
+    }
+
+    function handleTouchCancel(event) {
+        const touch = event.changedTouches && event.changedTouches[0];
+        const synthetic = {
+            pointerId: -1,
+            preventDefault: () => event.preventDefault()
+        };
+
+        if (touch) {
+            synthetic.clientX = touch.clientX;
+            synthetic.clientY = touch.clientY;
+        } else {
+            synthetic.clientX = uiState.pointer.x;
+            synthetic.clientY = uiState.pointer.y;
+        }
+
+        handlePointerCancel(synthetic);
     }
 
     function handlePointerMove(event) {
@@ -556,88 +716,104 @@
     }
 
     function handlePointerUp(event) {
+        const releasePid = typeof event.pointerId === "number" && event.pointerId >= 0 ? event.pointerId : -1;
         const position = getPointerPosition(event);
         const hadDraggedBrawler = Boolean(uiState.drag.brawlerId);
+        const inputChannel = event.__touchCompat ? "touch" : "pointer";
 
         uiState.pointer.x = position.x;
         uiState.pointer.y = position.y;
         uiState.pointer.isDown = false;
         uiState.pointer.id = null;
 
-        if (uiState.boxOpening.active) {
-            handleBoxOpeningClick(position);
-            event.preventDefault();
-            return;
-        }
-
-        if (uiState.panel.volumeSliderKey) {
-            uiState.panel.volumeSliderKey = null;
-            uiState.canvas.releasePointerCapture?.(event.pointerId);
-            event.preventDefault();
-            return;
-        }
-
-        if (uiState.panel.isScrolling) {
-            uiState.panel.isScrolling = false;
-            uiState.canvas.releasePointerCapture?.(event.pointerId);
-            if (Math.abs(uiState.panel.lastPointerY - position.y) > 4) {
-                event.preventDefault();
+        if (typeof event.clientX === "number" && typeof event.clientY === "number") {
+            if (isCrossChannelInputEcho(event.clientX, event.clientY, inputChannel)) {
+                tryReleasePointerCapture(releasePid);
+                event.preventDefault?.();
+                recordInputEcho(event.clientX, event.clientY, inputChannel);
                 return;
             }
         }
 
-        if (hadDraggedBrawler) {
-            finishBrawlerDrag();
-            uiState.canvas.releasePointerCapture?.(event.pointerId);
-            event.preventDefault();
-            return;
-        }
-
-        if (uiState.battle.phase !== "idle") {
-            handleBattleClick(position);
-            return;
-        }
-
-        if (handlePanelClick(position)) {
-            return;
-        }
-
-        if (uiState.activePanel) {
-            return;
-        }
-
-        if (isTutorialActive()) {
-            const step = getTutorialStep();
-
-            if (step === "buy") {
-                handleCharacterOfferClick(position);
+        try {
+            if (uiState.boxOpening.active) {
+                handleBoxOpeningClick(position);
+                event.preventDefault?.();
                 return;
             }
 
-            if (step === "battle_button") {
-                handleBottomBoxesClick(position);
+            if (uiState.panel.volumeSliderKey) {
+                uiState.panel.volumeSliderKey = null;
+                tryReleasePointerCapture(releasePid);
+                event.preventDefault?.();
                 return;
             }
 
-            if (step === "merge" || step === "battle_cards" || step === "battle_play" || step === "battle_confirm") {
+            if (uiState.panel.isScrolling) {
+                uiState.panel.isScrolling = false;
+                tryReleasePointerCapture(releasePid);
+                if (Math.abs(uiState.panel.lastPointerY - position.y) > 4) {
+                    event.preventDefault?.();
+                    return;
+                }
+            }
+
+            if (hadDraggedBrawler) {
+                finishBrawlerDrag();
+                tryReleasePointerCapture(releasePid);
+                event.preventDefault?.();
                 return;
             }
+
+            if (uiState.battle.phase !== "idle") {
+                handleBattleClick(position);
+                return;
+            }
+
+            if (handlePanelClick(position)) {
+                return;
+            }
+
+            if (uiState.activePanel) {
+                return;
+            }
+
+            if (isTutorialActive()) {
+                const step = getTutorialStep();
+
+                if (step === "buy") {
+                    handleCharacterOfferClick(position);
+                    return;
+                }
+
+                if (step === "battle_button") {
+                    handleBottomBoxesClick(position);
+                    return;
+                }
+
+                if (step === "merge" || step === "battle_cards" || step === "battle_play" || step === "battle_confirm") {
+                    return;
+                }
+            }
+
+            if (handleTopBarClick(position)) {
+                return;
+            }
+
+            if (handleMenuButtonClick(position)) {
+                return;
+            }
+
+            if (handleCharacterOfferClick(position)) {
+                return;
+            }
+
+            handleBottomBoxesClick(position);
+        } finally {
+            if (typeof event.clientX === "number" && typeof event.clientY === "number") {
+                recordInputEcho(event.clientX, event.clientY, inputChannel);
+            }
         }
-
-        if (handleTopBarClick(position)) {
-            return;
-        }
-
-        if (handleMenuButtonClick(position)) {
-            return;
-        }
-
-        if (handleCharacterOfferClick(position)) {
-            return;
-        }
-
-        handleBottomBoxesClick(position);
-
     }
 
     function handlePointerCancel(event) {
@@ -655,7 +831,7 @@
         uiState.panel.volumeSliderKey = null;
         uiState.pointer.isDown = false;
         uiState.pointer.id = null;
-        uiState.canvas.releasePointerCapture?.(event.pointerId);
+        tryReleasePointerCapture(typeof event.pointerId === "number" ? event.pointerId : -1);
     }
 
     function handleWheel(event) {
@@ -849,12 +1025,29 @@
         trimEffectArrays();
     }
 
-    function getCharacterOfferRect() {
+    /** Прямоугольник панели цены (как в drawCharacterOffer). */
+    function getCharacterOfferPanelRect() {
         return {
             x: 754,
             y: 570,
             width: 210,
             height: 104
+        };
+    }
+
+    /**
+     * Зона клика: панель + портрет над ней (иконка рисуется с y - 52, иначе тапы по лицу не попадали в hit-test).
+     */
+    function getCharacterOfferHitRect() {
+        const panel = getCharacterOfferPanelRect();
+        const iconSize = 90;
+        const iconOffsetAbove = 52;
+        const iconTop = panel.y - iconOffsetAbove;
+        return {
+            x: panel.x,
+            y: iconTop,
+            width: panel.width,
+            height: panel.height + iconOffsetAbove
         };
     }
 
@@ -905,7 +1098,7 @@
     }
 
     function handleCharacterOfferClick(position) {
-        if (!isInside(position, getCharacterOfferRect())) {
+        if (!isInside(position, getCharacterOfferHitRect())) {
             return false;
         }
 
@@ -967,7 +1160,7 @@
                 window.GameAssets.playSound("lose");
                 return true;
             }
-            openBattleSelectionWithInterstitial();
+            openBattleSelection();
             return true;
         }
 
@@ -984,7 +1177,7 @@
         return false;
     }
 
-    function openBattleSelectionWithInterstitial() {
+    function openBattleSelection() {
         if (uiState.battle.phase !== "idle" || uiState.boxOpening.active) {
             return;
         }
@@ -1004,16 +1197,7 @@
             completeTutorialIfDone();
         }
 
-        if (window.GameSDK?.isLocalMode?.()) {
-            openBattleSelectionPanel();
-            return;
-        }
-
-        window.GameSDK.showFullscreenAdv()
-            .catch(() => null)
-            .finally(() => {
-                openBattleSelectionPanel();
-            });
+        openBattleSelectionPanel();
     }
 
     function startBoxOpening(source) {
@@ -2594,6 +2778,10 @@
             return true;
         }
 
+        if (window.GameState.vipPurchased) {
+            return true;
+        }
+
         const packs = Array.isArray(window.InAppPurchaseConfig?.packs) ? window.InAppPurchaseConfig.packs : [];
         const vipPack = packs.find((pack) => pack.grantVip);
         const productId = vipPack?.productId || vipPack?.id || "vip_forever";
@@ -2659,6 +2847,7 @@
             return;
         }
 
+        ensureTutorialMinCoins();
         trackTutorialStepView(getTutorialStep());
         window.GameAnalytics?.reportFps?.(deltaSeconds);
         updateDynamicQuality(deltaSeconds);
@@ -2674,12 +2863,37 @@
 
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, uiState.cssWidth, uiState.cssHeight);
-        ctx.fillStyle = "#101525";
+        const dw = window.Base.designWidth;
+        const dh = window.Base.designHeight;
+        let designLeft;
+        let designTop;
+        let designRight;
+        let designBottom;
+        if (uiState.portraitGameLayout) {
+            designLeft = uiState.offsetX;
+            designTop = uiState.offsetY;
+            designRight = uiState.offsetX + dh * uiState.scale;
+            designBottom = uiState.offsetY + dw * uiState.scale;
+        } else {
+            designLeft = uiState.offsetX;
+            designTop = uiState.offsetY;
+            designRight = uiState.offsetX + dw * uiState.scale;
+            designBottom = uiState.offsetY + dh * uiState.scale;
+        }
+        const outerGradient = ctx.createLinearGradient(designLeft, designTop, designRight, designBottom);
+        outerGradient.addColorStop(0, "#5a1fcf");
+        outerGradient.addColorStop(0.55, "#8f39d8");
+        outerGradient.addColorStop(1, "#2b0f66");
+        ctx.fillStyle = outerGradient;
         ctx.fillRect(0, 0, uiState.cssWidth, uiState.cssHeight);
 
         ctx.save();
         ctx.translate(uiState.offsetX, uiState.offsetY);
         ctx.scale(uiState.scale, uiState.scale);
+        if (uiState.portraitGameLayout) {
+            ctx.translate(dw, 0);
+            ctx.rotate(Math.PI / 2);
+        }
         if (uiState.battle.phase === "fight" || uiState.battle.phase === "intro" || uiState.battle.phase === "result") {
             drawBattleScene(ctx, time);
         } else {
@@ -2729,7 +2943,7 @@
 
     function getTutorialTarget(step) {
         if (step === "buy") {
-            return { type: "rect", rect: getCharacterOfferRect(), text: getTutorialText(step) };
+            return { type: "rect", rect: getCharacterOfferHitRect(), text: getTutorialText(step) };
         }
 
         if (step === "battle_button") {
@@ -2887,13 +3101,10 @@
 
     function drawBackground(ctx, time) {
         const gradient = ctx.createLinearGradient(0, 0, window.Base.designWidth, window.Base.designHeight);
-        gradient.addColorStop(0, "#2437a8");
+        gradient.addColorStop(0, "#5a1fcf");
         gradient.addColorStop(0.45, "#8f39d8");
-        gradient.addColorStop(1, "#101525");
+        gradient.addColorStop(1, "#2b0f66");
         ctx.fillStyle = gradient;
-        ctx.fillRect(0, 0, window.Base.designWidth, window.Base.designHeight);
-        window.GameAssets.drawImageOrPlaceholder(ctx, "ui:background", 0, 0, window.Base.designWidth, window.Base.designHeight, "", "rgba(255, 255, 255, 0.04)");
-        ctx.fillStyle = "rgba(0, 0, 0, 0.28)";
         ctx.fillRect(0, 0, window.Base.designWidth, window.Base.designHeight);
         if (!isReduceAnimations()) {
             drawFloatingBubbles(ctx, time);
@@ -3049,7 +3260,8 @@
 
     function drawCenterField(ctx) {
         const field = getCenterFieldRect();
-        drawPanel(ctx, field.x, field.y, field.width, field.height, "rgba(15, 24, 50, 0.58)");
+        // Непрозрачная заливка, чтобы не просвечивал текст/графика с фонового ui:background (например «MEME MERGE»).
+        drawPanel(ctx, field.x, field.y, field.width, field.height, "rgba(15, 24, 50, 0.97)");
         ctx.save();
         ctx.strokeStyle = "rgba(255, 255, 255, 0.14)";
         ctx.lineWidth = 2;
@@ -3378,7 +3590,7 @@
     }
 
     function drawBottomBar(ctx) {
-        const offerRect = getCharacterOfferRect();
+        const offerRect = getCharacterOfferPanelRect();
         const progressRect = getProgressBoxRect();
         const adRect = getAdBoxRect();
         const battleRect = getBattleButtonRect();
@@ -4490,8 +4702,9 @@
         drawText(ctx, window.GameUtils.translate("vip.benefit_discount_line2"), textBlockX, body.y + 244, 21, "left");
 
         const vipBuyRect = { x: textBlockX, y: body.y + 332, width: textBlockWidth, height: 52 };
+        const vipOwned = Boolean(window.GameState.vipPurchased);
 
-        if (!window.GameState.vipPurchased && isCoinFallbackVip) {
+        if (!vipOwned && isCoinFallbackVip) {
             drawText(
                 ctx,
                 window.GameUtils.formatNumber(window.EconomyConfig.vipPriceCoins),
@@ -4502,25 +4715,28 @@
             );
         }
 
-        const vipUnavailable = !window.GameState.vipPurchased && !isCoinFallbackVip && !vipIapSupported;
+        const vipUnavailable = !vipOwned && !isCoinFallbackVip && !vipIapSupported;
+        const buyButtonEnabled = !vipOwned && !vipUnavailable;
         drawInteractivePanel(
             ctx,
             vipBuyRect,
-            vipUnavailable ? "#5f6a89" : "#23c26b",
-            vipUnavailable ? "#5f6a89" : "#31d77d"
+            buyButtonEnabled ? "#23c26b" : "#5f6a89",
+            buyButtonEnabled ? "#31d77d" : "#5f6a89"
         );
         drawText(
             ctx,
-            vipUnavailable
-                ? window.GameUtils.translate("base.unavailable")
-                : window.GameUtils.translate(window.GameState.vipPurchased ? "vip.status_active" : "vip.buy_vip"),
+            vipOwned
+                ? window.GameUtils.translate("vip.status_active")
+                : vipUnavailable
+                    ? window.GameUtils.translate("base.unavailable")
+                    : window.GameUtils.translate("vip.buy_vip"),
             textBlockX + textBlockWidth / 2,
             body.y + 358,
             23,
             "center"
         );
 
-        if (!window.GameState.vipPurchased && !isCoinFallbackVip) {
+        if (!vipOwned && !isCoinFallbackVip) {
             const priceLine = formatVipPanelPriceText(vipPackCfg, vipCatalog);
             const priceY = vipBuyRect.y + vipBuyRect.height + 14;
 

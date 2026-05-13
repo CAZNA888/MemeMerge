@@ -7,6 +7,42 @@
 
     const IAP_KNOWN_IDS = ["coins_10000", "coins_100000", "coins_1000000", "vip_forever"];
 
+    function getExternalBridge() {
+        return window.bridge || window.playgamaBridge || null;
+    }
+
+    /**
+     * Встроенный мост для локального запуска в браузере без портала Playgama.
+     * Достаточен для старта игры, сохранений (localStorage в SDK) и статического IAP-каталога.
+     */
+    function createLocalPlaygamaFallbackBridge() {
+        const lang = String(window.navigator?.language || "en").toLowerCase();
+
+        return {
+            isLocalFallback: true,
+            initialize: function () {
+                return Promise.resolve();
+            },
+            platform: {
+                id: "local",
+                language: lang,
+                sendMessage: function () {
+                    return Promise.resolve(false);
+                }
+            },
+            advertisement: {
+                isInterstitialSupported: false,
+                isRewardedSupported: false
+            },
+            payments: {
+                isSupported: false
+            },
+            leaderboards: {
+                type: "not_available"
+            }
+        };
+    }
+
     const sdkState = {
         bridge: null,
         platformLanguage: "",
@@ -19,13 +55,14 @@
         audioEventBound: false,
         lastInterstitialAt: 0,
         bannerTimerId: 0,
+        stickyBannerInteractionListenersBound: false,
         iapCatalogById: Object.create(null),
         portalCurrencyImage: null,
         portalCurrencyImageUrl: ""
     };
 
     function getBridge() {
-        return window.bridge || window.playgamaBridge || null;
+        return getExternalBridge() || sdkState.bridge || null;
     }
 
     function isOnlineMode() {
@@ -91,25 +128,33 @@
 
     function init() {
         return waitForBridge(5000).then(() => {
-            const bridge = getBridge();
-            sdkState.bridge = bridge;
+            const external = getExternalBridge();
 
-            if (!bridge || typeof bridge.initialize !== "function") {
-                console.warn("Playgama Bridge not found, local mode enabled.");
+            if (!external || typeof external.initialize !== "function") {
+                console.warn("Playgama Bridge not found, using embedded local fallback.");
+                sdkState.bridge = createLocalPlaygamaFallbackBridge();
                 sdkState.isLocalMode = true;
-                bindLifecycleEvents();
-                sdkState.isReady = true;
-                return sdkState;
+                sdkState.platformLanguage = String(sdkState.bridge.platform?.language || "").toLowerCase();
+
+                return refreshIapCatalog()
+                    .catch(() => {})
+                    .then(() => {
+                        bindLifecycleEvents();
+                        sdkState.isReady = true;
+                        return sdkState;
+                    });
             }
 
-            return bridge.initialize()
+            sdkState.bridge = external;
+
+            return external.initialize()
                 .then(() => {
                     sdkState.isLocalMode = false;
-                    sdkState.platformLanguage = String(bridge.platform?.language || "").toLowerCase();
+                    sdkState.platformLanguage = String(external.platform?.language || "").toLowerCase();
 
                     const minSec = Math.max(0, Math.floor(Number(window.AdConfig?.interstitialMinIntervalMs) / 1000));
-                    if (minSec > 0 && typeof bridge.advertisement?.setMinimumDelayBetweenInterstitial === "function") {
-                        bridge.advertisement.setMinimumDelayBetweenInterstitial(minSec);
+                    if (minSec > 0 && typeof external.advertisement?.setMinimumDelayBetweenInterstitial === "function") {
+                        external.advertisement.setMinimumDelayBetweenInterstitial(minSec);
                     }
 
                     return fetchRemoteFlags()
@@ -119,14 +164,15 @@
                         });
                 })
                 .catch((error) => {
-                    console.warn("Playgama Bridge init failed, local mode enabled.", error);
+                    console.warn("Playgama Bridge init failed, switching to embedded local fallback.", error);
                     sdkState.isLocalMode = true;
-                    sdkState.bridge = null;
+                    sdkState.bridge = createLocalPlaygamaFallbackBridge();
+                    sdkState.platformLanguage = String(sdkState.bridge.platform?.language || "").toLowerCase();
                     return refreshIapCatalog().catch(() => {});
                 })
                 .then(() => {
                     bindLifecycleEvents();
-                    startStickyBannerLoop();
+                    scheduleStickyBannerAfterFirstInteraction();
                     sdkState.isReady = true;
                     return sdkState;
                 });
@@ -371,6 +417,30 @@
         sdkState.bannerTimerId = window.setInterval(() => {
             ensureStickyBannerVisible();
         }, recheckMs);
+    }
+
+    /**
+     * Не показывать баннер до первого жеста пользователя (требования площадок в духе «сначала знакомство с игрой»).
+     */
+    function scheduleStickyBannerAfterFirstInteraction() {
+        if (!window.AdConfig?.stickyBannerEnabled || !isAdsSupported()) {
+            return;
+        }
+
+        if (sdkState.stickyBannerInteractionListenersBound) {
+            return;
+        }
+
+        sdkState.stickyBannerInteractionListenersBound = true;
+
+        function onFirstInteraction() {
+            document.removeEventListener("pointerdown", onFirstInteraction, true);
+            document.removeEventListener("touchstart", onFirstInteraction, true);
+            startStickyBannerLoop();
+        }
+
+        document.addEventListener("pointerdown", onFirstInteraction, true);
+        document.addEventListener("touchstart", onFirstInteraction, true);
     }
 
     function showRewardedVideo() {

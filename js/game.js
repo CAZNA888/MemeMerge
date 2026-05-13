@@ -212,7 +212,29 @@
             state.stats.openedBrawlers = getOpenedBrawlersUniqueCount(state.brawlers);
         }
 
+        ensureTutorialPlayCoins(state);
+
         return state;
+    }
+
+    function getTutorialPlayMinCoins() {
+        return Math.max(0, Math.floor(Number(window.EconomyConfig?.tutorialPlayMinCoins) || 1000));
+    }
+
+    function ensureTutorialPlayCoins(state) {
+        if (!state || !state.tutorial?.enabled || state.tutorial.completed) {
+            return;
+        }
+
+        const minCoins = getTutorialPlayMinCoins();
+
+        if (minCoins <= 0) {
+            return;
+        }
+
+        if ((Number(state.coins) || 0) < minCoins) {
+            state.coins = minCoins;
+        }
     }
 
     function serializeState() {
@@ -457,7 +479,7 @@
 
     function buyVip() {
         if (window.GameState.vipPurchased) {
-            return { success: true, alreadyOwned: true };
+            return { success: false, reason: "already_owned" };
         }
 
         const price = Number(window.EconomyConfig.vipPriceCoins) || 0;
@@ -738,6 +760,15 @@
             shouldMarkDirty = true;
         }
 
+        if (window.GameState?.tutorial?.enabled && !window.GameState.tutorial.completed) {
+            const minCoins = getTutorialPlayMinCoins();
+
+            if (minCoins > 0 && (Number(window.GameState.coins) || 0) < minCoins) {
+                window.GameState.coins = minCoins;
+                shouldMarkDirty = true;
+            }
+        }
+
         if (shouldMarkDirty) {
             markDirty();
         }
@@ -754,7 +785,7 @@
         return window.GameSDK.loadSave().then((saveData) => {
             window.GameState = normalizeState(saveData);
             if (!saveData) {
-                window.GameState.coins = Math.max(500, Number(window.GameState.coins) || 0);
+                window.GameState.coins = Math.max(getTutorialPlayMinCoins(), Number(window.GameState.coins) || 0);
                 window.GameState.tutorial = Object.assign({}, window.GameState.tutorial, {
                     enabled: true,
                     completed: false,
